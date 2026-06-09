@@ -2,6 +2,7 @@ import { PlatformShell } from "@/app/platform/platform-shell";
 import type { SidebarSection } from "@/app/platform/components/sidebar";
 import { createClient } from "@/utils/supabase/server";
 import { redirect } from "next/navigation";
+import { TaskBoard, type TaskRow } from "@/app/platform/task/task-board";
 import {
   createClient as createSupabaseAdminClient,
   type PostgrestError,
@@ -11,17 +12,7 @@ import {
 type UserRole = "revisor" | "usuario";
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 
-type AssignmentRow = {
-  id: string;
-  created_at: string | null;
-  status: string | null;
-  title: string | null;
-  description?: string | null;
-  due_at?: string | null;
-  priority?: string | null;
-  revisor_id?: string | null;
-  assigned_to_email?: string | null;
-};
+type AssignmentRow = TaskRow & { revisor_id?: string | null };
 
 function isUserRole(value: unknown): value is UserRole {
   return value === "revisor" || value === "usuario";
@@ -161,60 +152,8 @@ function normalizeEmail(value: string | null | undefined) {
   return (value ?? "").trim().toLowerCase();
 }
 
-function formatShortDate(value: string | null | undefined) {
-  if (!value) return "Sin fecha";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "Sin fecha";
-  return new Intl.DateTimeFormat("es-MX", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "2-digit",
-  }).format(date);
-}
-
-function getPriorityTone(priority: string | null | undefined) {
-  const normalized = (priority ?? "").trim().toLowerCase();
-  if (normalized.includes("urg") || normalized.includes("alta")) {
-    return "text-red-700 dark:text-red-300";
-  }
-  if (normalized.includes("med")) {
-    return "text-amber-700 dark:text-amber-300";
-  }
-  return "text-emerald-700 dark:text-emerald-300";
-}
-
-function getStatusTone(status: string | null | undefined) {
-  const normalized = (status ?? "").trim().toLowerCase();
-
-  if (normalized.includes("comp") || normalized.includes("done")) {
-    return "bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-200 dark:bg-emerald-950/30 dark:text-emerald-200 dark:ring-emerald-900";
-  }
-  if (normalized.includes("prog") || normalized.includes("curso")) {
-    return "bg-blue-50 text-blue-700 ring-1 ring-inset ring-blue-200 dark:bg-blue-950/30 dark:text-blue-200 dark:ring-blue-900";
-  }
-  return "bg-amber-50 text-amber-700 ring-1 ring-inset ring-amber-200 dark:bg-amber-950/30 dark:text-amber-200 dark:ring-amber-900";
-}
-
-function getDueTone(value: string | null | undefined, status: string | null | undefined) {
-  if (!value) return "text-zinc-500 dark:text-zinc-400";
-
-  const normalizedStatus = (status ?? "").trim().toLowerCase();
-  if (normalizedStatus.includes("comp") || normalizedStatus.includes("done")) {
-    return "text-zinc-500 dark:text-zinc-400";
-  }
-
-  const due = new Date(value);
-  if (Number.isNaN(due.getTime())) return "text-zinc-500 dark:text-zinc-400";
-
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  due.setHours(0, 0, 0, 0);
-
-  if (due.getTime() < today.getTime()) {
-    return "text-red-600 dark:text-red-400";
-  }
-
-  return "text-zinc-700 dark:text-zinc-200";
+function sanitizeFileName(fileName: string) {
+  return fileName.replace(/[^\w.\-()+\s]/g, "").replace(/\s+/g, " ").trim();
 }
 
 export default async function TaskPage({
@@ -241,6 +180,8 @@ export default async function TaskPage({
   const sections = buildSections(role);
   const sp = await searchParams;
   const statusFilter = getSearchParam(sp, "status") ?? "all";
+  const errorParam = getSearchParam(sp, "error");
+  const messageParam = getSearchParam(sp, "message");
 
   const userEmail = normalizeEmail(user.email);
 
@@ -308,6 +249,113 @@ export default async function TaskPage({
     return true;
   });
 
+  async function submitWork(formData: FormData) {
+    "use server";
+
+    const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    if (!url || !anonKey || url.includes("__REPLACE_ME__") || anonKey.includes("__REPLACE_ME__")) {
+      redirect("/?error=" + encodeURIComponent("Configura Supabase primero (env vars)."));
+    }
+
+    const supabase = await createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) redirect("/");
+
+    const role = await getRoleFromUserRolesTable(supabase, user.id);
+    if (role !== "usuario") {
+      redirect("/platform/task?error=" + encodeURIComponent("No tienes permisos para entregar."));
+    }
+
+    const assignmentId = String(formData.get("assignment_id") ?? "").trim();
+    const file = formData.get("file");
+
+    if (!assignmentId) {
+      redirect("/platform/task?error=" + encodeURIComponent("Falta assignment_id."));
+    }
+
+    if (!(file instanceof File) || file.size <= 0) {
+      redirect("/platform/task?error=" + encodeURIComponent("Selecciona un PDF."));
+    }
+
+    const name = file.name || "archivo.pdf";
+    const lower = name.toLowerCase();
+    if (!lower.endsWith(".pdf")) {
+      redirect("/platform/task?error=" + encodeURIComponent("Solo se permiten archivos PDF."));
+    }
+
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const header =
+      String.fromCharCode(bytes[0] ?? 0) +
+      String.fromCharCode(bytes[1] ?? 0) +
+      String.fromCharCode(bytes[2] ?? 0) +
+      String.fromCharCode(bytes[3] ?? 0);
+    if (header !== "%PDF") {
+      redirect("/platform/task?error=" + encodeURIComponent("El archivo no parece ser un PDF válido."));
+    }
+
+    const userEmail = normalizeEmail(user.email);
+    if (!userEmail) {
+      redirect("/platform/task?error=" + encodeURIComponent("No se encontró tu correo."));
+    }
+
+    const verify = await supabase
+      .from("asignaciones")
+      .select("id, assigned_to_email")
+      .eq("id", assignmentId)
+      .maybeSingle();
+
+    if (verify.error) {
+      redirect("/platform/task?error=" + encodeURIComponent(verify.error.message));
+    }
+
+    const assignedTo = normalizeEmail((verify.data as { assigned_to_email?: string | null } | null)?.assigned_to_email);
+    if (!assignedTo || assignedTo !== userEmail) {
+      redirect("/platform/task?error=" + encodeURIComponent("Esta tarea no está asignada a tu usuario."));
+    }
+
+    const safeName = sanitizeFileName(name) || "archivo.pdf";
+    const objectPath = `entregas/${user.id}/${assignmentId}/${Date.now()}-${safeName}`;
+
+    const upload = await supabase.storage
+      .from("asignaciones")
+      .upload(objectPath, new File([bytes], safeName, { type: "application/pdf" }), {
+        contentType: "application/pdf",
+        upsert: false,
+      });
+
+    if (upload.error) {
+      redirect("/platform/task?error=" + encodeURIComponent(upload.error.message));
+    }
+
+    const updatePayload: Record<string, unknown> = {
+      submission_name: safeName,
+      submission_mime: "application/pdf",
+      submission_path: objectPath,
+      submitted_at: new Date().toISOString(),
+      submitted_by_email: userEmail,
+    };
+
+    const updated = await supabase.from("asignaciones").update(updatePayload).eq("id", assignmentId);
+    if (updated.error) {
+      const msg = (updated.error.message ?? "").toLowerCase();
+      const code = (updated.error as unknown as { code?: string } | null)?.code ?? "";
+      const schemaMismatch =
+        msg.includes("schema cache") ||
+        msg.includes("could not find") ||
+        msg.includes("does not exist") ||
+        code === "PGRST204";
+
+      if (!schemaMismatch) {
+        redirect("/platform/task?error=" + encodeURIComponent(updated.error.message));
+      }
+    }
+
+    redirect("/platform/task?message=" + encodeURIComponent("Entrega enviada."));
+  }
+
   return (
     <PlatformShell
       sections={sections}
@@ -373,6 +421,19 @@ export default async function TaskPage({
           </div>
         </div>
 
+        {(errorParam || messageParam) && (
+          <div
+            className={[
+              "mt-4 rounded-lg border p-4 text-sm",
+              errorParam
+                ? "border-red-200 bg-red-50 text-red-900 dark:border-red-900/40 dark:bg-red-950/40 dark:text-red-100"
+                : "border-zinc-200 bg-zinc-50 text-zinc-900 dark:border-zinc-800 dark:bg-zinc-900/30 dark:text-zinc-100",
+            ].join(" ")}
+          >
+            {errorParam ?? messageParam}
+          </div>
+        )}
+
         <div className="mt-4 rounded-lg border border-zinc-200 bg-white px-5 py-4 dark:border-zinc-800 dark:bg-zinc-950">
           <div className="text-sm font-medium text-zinc-950 dark:text-zinc-50">
             {assignments.length} actividades
@@ -397,52 +458,7 @@ export default async function TaskPage({
         )}
 
         {!error && assignments.length > 0 && (
-          <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-            {assignments.map((a) => (
-              <div
-                key={a.id}
-                className="flex flex-col justify-between rounded-lg border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-950"
-              >
-                <div className="min-w-0">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="truncate text-sm font-semibold text-zinc-950 dark:text-zinc-50">
-                        {a.title ?? "Sin título"}
-                      </div>
-                      {a.description && (
-                        <div className="mt-2 line-clamp-3 text-sm text-zinc-600 dark:text-zinc-400">
-                          {a.description}
-                        </div>
-                      )}
-                    </div>
-                    <span
-                      className={[
-                        "shrink-0 rounded-full px-2.5 py-1 text-xs font-medium",
-                        getStatusTone(a.status),
-                      ].join(" ")}
-                    >
-                      {a.status ?? "Pendiente"}
-                    </span>
-                  </div>
-                </div>
-
-                <div className="mt-4 grid gap-2 text-xs text-zinc-600 dark:text-zinc-400">
-                  <div className="flex items-center justify-between gap-3">
-                    <span>Prioridad</span>
-                    <span className={["font-medium", getPriorityTone(a.priority)].join(" ")}>
-                      {a.priority ?? "Media"}
-                    </span>
-                  </div>
-                  <div className="flex items-center justify-between gap-3">
-                    <span>Fecha límite</span>
-                    <span className={["font-medium", getDueTone(a.due_at, a.status)].join(" ")}>
-                      {formatShortDate(a.due_at)}
-                    </span>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
+          <TaskBoard role={role} tasks={assignments} onSubmit={submitWork} />
         )}
       </div>
     </PlatformShell>
