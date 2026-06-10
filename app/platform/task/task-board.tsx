@@ -13,6 +13,10 @@ export type TaskRow = {
   due_at?: string | null;
   priority?: string | null;
   assigned_to_email?: string | null;
+  submission_name?: string | null;
+  submission_path?: string | null;
+  submitted_at?: string | null;
+  submitted_by_email?: string | null;
 };
 
 function formatShortDate(value: string | null | undefined) {
@@ -75,10 +79,12 @@ export function TaskBoard({
   role,
   tasks,
   onSubmit,
+  onDownload,
 }: {
   role: UserRole;
   tasks: TaskRow[];
   onSubmit: (formData: FormData) => Promise<void>;
+  onDownload: (formData: FormData) => Promise<void>;
 }) {
   const [openId, setOpenId] = useState<string | null>(null);
 
@@ -211,6 +217,47 @@ export function TaskBoard({
                     {isCompleted(selected.status)
                       ? "Completada por el supervisor."
                       : "Aún pendiente de entrega."}
+                  </div>
+                </div>
+              )}
+
+              {selected.submission_path && (
+                <div className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-black">
+                  <div className="text-sm font-medium text-zinc-950 dark:text-zinc-50">
+                    Entrega
+                  </div>
+                  <div className="mt-2 grid gap-2 text-sm text-zinc-700 dark:text-zinc-300">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="text-zinc-600 dark:text-zinc-400">Archivo</span>
+                      <span className="font-medium">
+                        {selected.submission_name ?? "PDF"}
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="text-zinc-600 dark:text-zinc-400">Enviado</span>
+                      <span className="font-medium">
+                        {formatShortDate(selected.submitted_at)}
+                      </span>
+                    </div>
+                    {selected.submitted_by_email && (
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className="text-zinc-600 dark:text-zinc-400">Por</span>
+                        <span className="font-medium">{selected.submitted_by_email}</span>
+                      </div>
+                    )}
+                    <form action={onDownload}>
+                      <input
+                        type="hidden"
+                        name="assignment_id"
+                        value={selected.id}
+                      />
+                      <button
+                        type="submit"
+                        className="mt-1 inline-flex h-10 w-full items-center justify-center rounded-md border border-zinc-200 bg-white px-4 text-sm font-medium text-zinc-900 hover:bg-zinc-100 dark:border-zinc-800 dark:bg-black dark:text-zinc-100 dark:hover:bg-zinc-900"
+                      >
+                        Descargar PDF
+                      </button>
+                    </form>
                   </div>
                 </div>
               )}

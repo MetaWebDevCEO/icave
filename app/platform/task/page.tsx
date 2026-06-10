@@ -186,7 +186,7 @@ export default async function TaskPage({
   const userEmail = normalizeEmail(user.email);
 
   const selectFields =
-    "id, created_at, status, title, description, due_at, priority, revisor_id, assigned_to_email";
+    "id, created_at, status, title, description, due_at, priority, revisor_id, assigned_to_email, submission_name, submission_path, submitted_at, submitted_by_email";
 
   const fetchSupervisor = async (client: SupabaseClient) => {
     return client
@@ -360,25 +360,8 @@ export default async function TaskPage({
       redirect("/platform/task?error=" + encodeURIComponent(uploadA.error.message));
     }
 
-    const statusUpdateA = await supabase
-      .from("asignaciones")
-      .update({ status: "Completada" })
-      .eq("id", assignmentId);
-
-    let statusError = statusUpdateA.error;
-    if (statusError && admin) {
-      const statusUpdateB = await admin
-        .from("asignaciones")
-        .update({ status: "Completada" })
-        .eq("id", assignmentId);
-      statusError = statusUpdateB.error;
-    }
-
-    if (statusError) {
-      redirect("/platform/task?error=" + encodeURIComponent(statusError.message));
-    }
-
-    const updatePayload: Record<string, unknown> = {
+    const fullPayload: Record<string, unknown> = {
+      status: "Completada",
       submission_name: safeName,
       submission_mime: "application/pdf",
       submission_path: objectPath,
@@ -386,11 +369,11 @@ export default async function TaskPage({
       submitted_by_email: userEmail,
     };
 
-    const updatedA = await supabase.from("asignaciones").update(updatePayload).eq("id", assignmentId);
+    const updatedA = await supabase.from("asignaciones").update(fullPayload).eq("id", assignmentId);
     let updateError = updatedA.error;
 
     if (updateError && admin) {
-      const updatedB = await admin.from("asignaciones").update(updatePayload).eq("id", assignmentId);
+      const updatedB = await admin.from("asignaciones").update(fullPayload).eq("id", assignmentId);
       updateError = updatedB.error;
     }
 
@@ -403,12 +386,127 @@ export default async function TaskPage({
         msg.includes("does not exist") ||
         code === "PGRST204";
 
-      if (!schemaMismatch) {
+      if (schemaMismatch) {
+        const statusA = await supabase
+          .from("asignaciones")
+          .update({ status: "Completada" })
+          .eq("id", assignmentId);
+
+        let statusError = statusA.error;
+        if (statusError && admin) {
+          const statusB = await admin
+            .from("asignaciones")
+            .update({ status: "Completada" })
+            .eq("id", assignmentId);
+          statusError = statusB.error;
+        }
+
+        if (statusError) {
+          redirect("/platform/task?error=" + encodeURIComponent(statusError.message));
+        }
+      } else {
         redirect("/platform/task?error=" + encodeURIComponent(updateError.message));
       }
     }
 
     redirect("/platform/task?message=" + encodeURIComponent("Entrega enviada."));
+  }
+
+  async function downloadSubmission(formData: FormData) {
+    "use server";
+
+    const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    if (!url || !anonKey || url.includes("__REPLACE_ME__") || anonKey.includes("__REPLACE_ME__")) {
+      redirect("/?error=" + encodeURIComponent("Configura Supabase primero (env vars)."));
+    }
+
+    const assignmentId = String(formData.get("assignment_id") ?? "").trim();
+    if (!assignmentId) {
+      redirect("/platform/task?error=" + encodeURIComponent("Falta assignment_id."));
+    }
+
+    const supabase = await createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) redirect("/");
+
+    const role = await getRoleFromUserRolesTable(supabase, user.id);
+
+    const admin =
+      serviceKey && !serviceKey.includes("__REPLACE_ME__")
+        ? createSupabaseAdminClient(url, serviceKey, {
+            auth: { persistSession: false, autoRefreshToken: false },
+          })
+        : null;
+
+    const select = "id, revisor_id, assigned_to_email, submission_path";
+    const rowA = await supabase
+      .from("asignaciones")
+      .select(select)
+      .eq("id", assignmentId)
+      .maybeSingle();
+
+    let row = rowA.data as
+      | { revisor_id?: string | null; assigned_to_email?: string | null; submission_path?: string | null }
+      | null;
+    let rowError = rowA.error;
+
+    if ((!row || rowError) && admin) {
+      const rowB = await admin
+        .from("asignaciones")
+        .select(select)
+        .eq("id", assignmentId)
+        .maybeSingle();
+      row = rowB.data as
+        | { revisor_id?: string | null; assigned_to_email?: string | null; submission_path?: string | null }
+        | null;
+      rowError = rowB.error;
+    }
+
+    if (rowError) {
+      redirect("/platform/task?error=" + encodeURIComponent(rowError.message));
+    }
+    if (!row?.submission_path) {
+      redirect("/platform/task?error=" + encodeURIComponent("No hay entrega para descargar."));
+    }
+
+    const userEmail = normalizeEmail(user.email);
+    const assignedTo = normalizeEmail(row.assigned_to_email);
+    const canAccess =
+      (role === "usuario" && userEmail && assignedTo && userEmail === assignedTo) ||
+      (role === "revisor" && row.revisor_id === user.id);
+
+    if (!canAccess) {
+      redirect("/platform/task?error=" + encodeURIComponent("No tienes permisos para descargar."));
+    }
+
+    const signedA = await supabase.storage
+      .from("asignaciones")
+      .createSignedUrl(row.submission_path, 60);
+
+    let signedUrl = signedA.data?.signedUrl ?? null;
+    let signedError = signedA.error;
+
+    if ((!signedUrl || signedError) && admin) {
+      const signedB = await admin.storage
+        .from("asignaciones")
+        .createSignedUrl(row.submission_path, 60);
+      signedUrl = signedB.data?.signedUrl ?? null;
+      signedError = signedB.error;
+    }
+
+    if (signedError || !signedUrl) {
+      redirect(
+        "/platform/task?error=" +
+          encodeURIComponent(signedError?.message ?? "No se pudo generar el enlace.")
+      );
+    }
+
+    redirect(signedUrl);
   }
 
   return (
@@ -513,7 +611,12 @@ export default async function TaskPage({
         )}
 
         {!error && assignments.length > 0 && (
-          <TaskBoard role={role} tasks={assignments} onSubmit={submitWork} />
+          <TaskBoard
+            role={role}
+            tasks={assignments}
+            onSubmit={submitWork}
+            onDownload={downloadSubmission}
+          />
         )}
       </div>
     </PlatformShell>
