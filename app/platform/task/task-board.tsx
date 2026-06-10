@@ -379,28 +379,29 @@ export function TaskBoard({
                   <div className="text-sm font-medium text-zinc-950 dark:text-zinc-50">
                     Subir archivo (PDF)
                   </div>
-                  {isCompleted(selected.status) ? (
+                  {selected.submission_path && (
                     <div className="mt-2 text-sm text-zinc-700 dark:text-zinc-300">
-                      Esta tarea ya está marcada como completada.
+                      Ya existe una entrega. Puedes reemplazarla subiendo un nuevo PDF.
                     </div>
-                  ) : (
-                    <form action={onSubmit} className="mt-3 grid gap-3">
-                      <input type="hidden" name="assignment_id" value={selected.id} />
-                      <input
-                        name="file"
-                        type="file"
-                        accept="application/pdf,.pdf"
-                        required
-                        className="block w-full text-sm text-zinc-700 file:mr-4 file:rounded-md file:border file:border-zinc-200 file:bg-white file:px-3 file:py-2 file:text-sm file:font-medium file:text-zinc-900 hover:file:bg-zinc-100 dark:text-zinc-300 dark:file:border-zinc-800 dark:file:bg-black dark:file:text-zinc-100 dark:hover:file:bg-zinc-900"
-                      />
-                      <button
-                        type="submit"
-                        className="inline-flex h-10 items-center justify-center rounded-md bg-zinc-900 px-4 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
-                      >
-                        Enviar entrega
-                      </button>
-                    </form>
                   )}
+                  <form action={onSubmit} className="mt-3 grid gap-3">
+                    <input type="hidden" name="assignment_id" value={selected.id} />
+                    <input
+                      name="file"
+                      type="file"
+                      accept="application/pdf,.pdf"
+                      required
+                      className="block w-full text-sm text-zinc-700 file:mr-4 file:rounded-md file:border file:border-zinc-200 file:bg-white file:px-3 file:py-2 file:text-sm file:font-medium file:text-zinc-900 hover:file:bg-zinc-100 dark:text-zinc-300 dark:file:border-zinc-800 dark:file:bg-black dark:file:text-zinc-100 dark:hover:file:bg-zinc-900"
+                    />
+                    <button
+                      type="submit"
+                      className="inline-flex h-10 items-center justify-center rounded-md bg-zinc-900 px-4 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
+                    >
+                      {selected.submission_path || isCompleted(selected.status)
+                        ? "Actualizar entrega"
+                        : "Enviar entrega"}
+                    </button>
+                  </form>
                 </div>
               )}
             </div>

@@ -350,20 +350,20 @@ export default async function TaskPage({
 
     const verifyA = await supabase
       .from("asignaciones")
-      .select("id, assigned_to_email")
+      .select("id, assigned_to_email, submission_path")
       .eq("id", assignmentId)
       .maybeSingle();
 
-    let verifyRow = verifyA.data as { assigned_to_email?: string | null } | null;
+    let verifyRow = verifyA.data as { assigned_to_email?: string | null; submission_path?: string | null } | null;
     let verifyError = verifyA.error;
 
     if ((!verifyRow || verifyError) && admin) {
       const verifyB = await admin
         .from("asignaciones")
-        .select("id, assigned_to_email")
+        .select("id, assigned_to_email, submission_path")
         .eq("id", assignmentId)
         .maybeSingle();
-      verifyRow = verifyB.data as { assigned_to_email?: string | null } | null;
+      verifyRow = verifyB.data as { assigned_to_email?: string | null; submission_path?: string | null } | null;
       verifyError = verifyB.error;
     }
 
@@ -377,9 +377,17 @@ export default async function TaskPage({
     }
 
     const safeName = sanitizeFileName(name) || "archivo.pdf";
+    const previousPath = (verifyRow?.submission_path ?? "").trim() || null;
     const objectPath = `entregas/${user.id}/${assignmentId}/${Date.now()}-${safeName}`;
 
     const fileToUpload = new File([bytes], safeName, { type: "application/pdf" });
+
+    if (previousPath) {
+      const removeA = await supabase.storage.from("asignaciones").remove([previousPath]);
+      if (removeA.error && admin) {
+        await admin.storage.from("asignaciones").remove([previousPath]);
+      }
+    }
 
     const uploadA = await supabase.storage.from("asignaciones").upload(objectPath, fileToUpload, {
       contentType: "application/pdf",
