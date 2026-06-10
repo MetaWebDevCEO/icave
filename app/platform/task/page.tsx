@@ -156,6 +156,19 @@ function sanitizeFileName(fileName: string) {
   return fileName.replace(/[^\w.\-()+\s]/g, "").replace(/\s+/g, " ").trim();
 }
 
+function isSchemaMismatch(err: PostgrestError | null) {
+  if (!err) return false;
+  const code = (err as unknown as { code?: string } | null)?.code ?? "";
+  const msg = (err.message ?? "").toLowerCase();
+  return (
+    code === "PGRST204" ||
+    msg.includes("schema cache") ||
+    msg.includes("could not find") ||
+    msg.includes("does not exist") ||
+    msg.includes("column")
+  );
+}
+
 export default async function TaskPage({
   searchParams,
 }: {
@@ -191,19 +204,6 @@ export default async function TaskPage({
     "id, created_at, status, title, description, due_at, priority, revisor_id, assigned_to_email, submission_path, submitted_at, submitted_by_email";
   const selectFieldsExtended =
     "id, created_at, status, title, description, due_at, priority, revisor_id, assigned_to_email, submission_name, submission_path, submitted_at, submitted_by_email";
-
-  const isSchemaMismatch = (err: PostgrestError | null) => {
-    if (!err) return false;
-    const code = (err as unknown as { code?: string } | null)?.code ?? "";
-    const msg = (err.message ?? "").toLowerCase();
-    return (
-      code === "PGRST204" ||
-      msg.includes("schema cache") ||
-      msg.includes("could not find") ||
-      msg.includes("does not exist") ||
-      msg.includes("column")
-    );
-  };
 
   const fetchSupervisor = async (client: SupabaseClient) => {
     const extended = await client
