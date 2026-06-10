@@ -75,6 +75,12 @@ function getDueTone(value: string | null | undefined, status: string | null | un
   return "text-zinc-700 dark:text-zinc-200";
 }
 
+function extractEntregaPathFromDescription(description: string | null | undefined) {
+  if (!description) return null;
+  const match = /^\s*entrega:\s*(\S+)\s*$/im.exec(description);
+  return match?.[1] ?? null;
+}
+
 export function TaskBoard({
   role,
   tasks,
@@ -94,6 +100,8 @@ export function TaskBoard({
     if (!openId) return null;
     return tasks.find((t) => t.id === openId) ?? null;
   }, [openId, tasks]);
+
+  const deliveryPath = selected?.submission_path ?? extractEntregaPathFromDescription(selected?.description);
 
   const isCompleted = (status: string | null | undefined) => {
     const normalized = (status ?? "").trim().toLowerCase();
@@ -229,7 +237,7 @@ export function TaskBoard({
                 </div>
               )}
 
-              {selected.submission_path && (
+              {deliveryPath && (
                 <div className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-black">
                   <div className="text-sm font-medium text-zinc-950 dark:text-zinc-50">
                     Entrega
@@ -323,7 +331,7 @@ export function TaskBoard({
                   <div className="text-sm font-medium text-zinc-950 dark:text-zinc-50">
                     Subir archivo (PDF)
                   </div>
-                  {selected.submission_path && (
+                  {deliveryPath && (
                     <div className="mt-2 text-sm text-zinc-700 dark:text-zinc-300">
                       Ya existe una entrega. Puedes reemplazarla subiendo un nuevo PDF.
                     </div>
@@ -341,7 +349,7 @@ export function TaskBoard({
                       type="submit"
                       className="inline-flex h-10 items-center justify-center rounded-md bg-zinc-900 px-4 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
                     >
-                      {selected.submission_path || isCompleted(selected.status)
+                      {deliveryPath || isCompleted(selected.status)
                         ? "Actualizar entrega"
                         : "Enviar entrega"}
                     </button>

@@ -171,6 +171,38 @@ function isSchemaMismatch(err: PostgrestError | null) {
   );
 }
 
+function extractEntregaPathFromDescription(description: string | null | undefined) {
+  if (!description) return null;
+  const match = /^\s*entrega:\s*(\S+)\s*$/im.exec(description);
+  return match?.[1] ?? null;
+}
+
+function upsertEntregaIntoDescription(
+  description: string | null | undefined,
+  objectPath: string,
+  submittedByEmail: string,
+  submittedAtISO: string
+) {
+  const input = String(description ?? "").trimEnd();
+  const lines = input.length > 0 ? input.split(/\r?\n/) : [];
+  const filtered = lines.filter((line) => {
+    const normalized = line.trim().toLowerCase();
+    if (normalized.startsWith("entrega:")) return false;
+    if (normalized.startsWith("entregado por:")) return false;
+    if (normalized.startsWith("entregado el:")) return false;
+    return true;
+  });
+
+  const base = filtered.join("\n").trimEnd();
+  const meta = [
+    "Entrega: " + objectPath,
+    "Entregado por: " + submittedByEmail,
+    "Entregado el: " + submittedAtISO,
+  ].join("\n");
+
+  return base ? `${base}\n\n${meta}` : meta;
+}
+
 export default async function TaskPage({
   searchParams,
 }: {
@@ -375,7 +407,7 @@ export default async function TaskPage({
     const fetchVerify = async (client: SupabaseClient) => {
       const extended = await client
         .from("asignaciones")
-        .select("id, assigned_to_email, submission_path")
+        .select("id, assigned_to_email, submission_path, description")
         .eq("id", assignmentId)
         .maybeSingle();
 
@@ -383,21 +415,21 @@ export default async function TaskPage({
 
       return client
         .from("asignaciones")
-        .select("id, assigned_to_email")
+        .select("id, assigned_to_email, description")
         .eq("id", assignmentId)
         .maybeSingle();
     };
 
     const verifyA = await fetchVerify(supabase);
     let verifyRow = verifyA.data as
-      | { assigned_to_email?: string | null; submission_path?: string | null }
+      | { assigned_to_email?: string | null; submission_path?: string | null; description?: string | null }
       | null;
     let verifyError = verifyA.error;
 
     if ((!verifyRow || verifyError) && admin) {
       const verifyB = await fetchVerify(admin);
       verifyRow = verifyB.data as
-        | { assigned_to_email?: string | null; submission_path?: string | null }
+        | { assigned_to_email?: string | null; submission_path?: string | null; description?: string | null }
         | null;
       verifyError = verifyB.error;
     }
@@ -412,27 +444,19 @@ export default async function TaskPage({
     }
 
     const safeName = sanitizeFileName(name) || "archivo.pdf";
-    const previousPath = (verifyRow?.submission_path ?? "").trim() || null;
-    const objectPath = `entregas/${user.id}/${assignmentId}/${Date.now()}-${safeName}`;
+    const objectPath = `entregas/${user.id}/${assignmentId}/entrega.pdf`;
 
     const fileToUpload = new File([bytes], safeName, { type: "application/pdf" });
 
-    if (previousPath) {
-      const removeA = await supabase.storage.from("asignaciones").remove([previousPath]);
-      if (removeA.error && admin) {
-        await admin.storage.from("asignaciones").remove([previousPath]);
-      }
-    }
-
     const uploadA = await supabase.storage.from("asignaciones").upload(objectPath, fileToUpload, {
       contentType: "application/pdf",
-      upsert: false,
+      upsert: true,
     });
 
     if (uploadA.error && admin) {
       const uploadB = await admin.storage.from("asignaciones").upload(objectPath, fileToUpload, {
         contentType: "application/pdf",
-        upsert: false,
+        upsert: true,
       });
 
       if (uploadB.error) {
@@ -473,22 +497,18 @@ export default async function TaskPage({
     }
 
     if (isSchemaMismatch(update.error)) {
-      const statusOnly = await tryUpdate({ status: "Completada" });
-      if (!statusOnly.error) {
-        const removeA = await supabase.storage.from("asignaciones").remove([objectPath]);
-        if (removeA.error && admin) {
-          await admin.storage.from("asignaciones").remove([objectPath]);
-        }
+      const nowISO = new Date().toISOString();
+      const updatedDescription = upsertEntregaIntoDescription(
+        verifyRow?.description,
+        objectPath,
+        userEmail,
+        nowISO
+      );
 
-        redirect(
-          "/platform/task?error=" +
-            encodeURIComponent(
-              "Tu tabla asignaciones no tiene columnas para guardar la entrega (submission_path, submitted_at, submitted_by_email). Agrega esas columnas para poder ver el PDF en el revisor."
-            )
-        );
-      }
-
-      update = statusOnly;
+      update = await tryUpdate({
+        status: "Completada",
+        description: updatedDescription,
+      });
     }
 
     if (update.error) {
@@ -529,7 +549,7 @@ export default async function TaskPage({
           })
         : null;
 
-    const select = "id, revisor_id, assigned_to_email, submission_path";
+    const select = "id, revisor_id, assigned_to_email, submission_path, description";
     const rowA = await supabase
       .from("asignaciones")
       .select(select)
@@ -537,7 +557,7 @@ export default async function TaskPage({
       .maybeSingle();
 
     let row = rowA.data as
-      | { revisor_id?: string | null; assigned_to_email?: string | null; submission_path?: string | null }
+      | { revisor_id?: string | null; assigned_to_email?: string | null; submission_path?: string | null; description?: string | null }
       | null;
     let rowError = rowA.error;
 
@@ -548,7 +568,7 @@ export default async function TaskPage({
         .eq("id", assignmentId)
         .maybeSingle();
       row = rowB.data as
-        | { revisor_id?: string | null; assigned_to_email?: string | null; submission_path?: string | null }
+        | { revisor_id?: string | null; assigned_to_email?: string | null; submission_path?: string | null; description?: string | null }
         | null;
       rowError = rowB.error;
     }
@@ -556,7 +576,11 @@ export default async function TaskPage({
     if (rowError) {
       redirect("/platform/task?error=" + encodeURIComponent(rowError.message));
     }
-    if (!row?.submission_path) {
+    if (!row) {
+      redirect("/platform/task?error=" + encodeURIComponent("No se encontró la asignación."));
+    }
+    const path = row?.submission_path ?? extractEntregaPathFromDescription(row?.description);
+    if (!path) {
       redirect("/platform/task?error=" + encodeURIComponent("No hay entrega para descargar."));
     }
 
@@ -572,7 +596,7 @@ export default async function TaskPage({
 
     const signedA = await supabase.storage
       .from("asignaciones")
-      .createSignedUrl(row.submission_path, 60);
+      .createSignedUrl(path, 60);
 
     let signedUrl = signedA.data?.signedUrl ?? null;
     let signedError = signedA.error;
@@ -580,7 +604,7 @@ export default async function TaskPage({
     if ((!signedUrl || signedError) && admin) {
       const signedB = await admin.storage
         .from("asignaciones")
-        .createSignedUrl(row.submission_path, 60);
+        .createSignedUrl(path, 60);
       signedUrl = signedB.data?.signedUrl ?? null;
       signedError = signedB.error;
     }
@@ -626,7 +650,7 @@ export default async function TaskPage({
           })
         : null;
 
-    const select = "id, revisor_id, assigned_to_email, submission_path";
+    const select = "id, revisor_id, assigned_to_email, submission_path, description";
     const rowA = await supabase
       .from("asignaciones")
       .select(select)
@@ -634,7 +658,7 @@ export default async function TaskPage({
       .maybeSingle();
 
     let row = rowA.data as
-      | { revisor_id?: string | null; assigned_to_email?: string | null; submission_path?: string | null }
+      | { revisor_id?: string | null; assigned_to_email?: string | null; submission_path?: string | null; description?: string | null }
       | null;
     let rowError = rowA.error;
 
@@ -645,13 +669,15 @@ export default async function TaskPage({
         .eq("id", assignmentId)
         .maybeSingle();
       row = rowB.data as
-        | { revisor_id?: string | null; assigned_to_email?: string | null; submission_path?: string | null }
+        | { revisor_id?: string | null; assigned_to_email?: string | null; submission_path?: string | null; description?: string | null }
         | null;
       rowError = rowB.error;
     }
 
     if (rowError) return { ok: false as const, error: rowError.message };
-    if (!row?.submission_path) return { ok: false as const, error: "No hay entrega para ver." };
+    if (!row) return { ok: false as const, error: "No se encontró la asignación." };
+    const path = row?.submission_path ?? extractEntregaPathFromDescription(row?.description);
+    if (!path) return { ok: false as const, error: "No hay entrega para ver." };
 
     const userEmail = normalizeEmail(user.email);
     const assignedTo = normalizeEmail(row.assigned_to_email);
@@ -663,7 +689,7 @@ export default async function TaskPage({
 
     const signedA = await supabase.storage
       .from("asignaciones")
-      .createSignedUrl(row.submission_path, 60);
+      .createSignedUrl(path, 60);
 
     let signedUrl = signedA.data?.signedUrl ?? null;
     let signedError = signedA.error;
@@ -671,7 +697,7 @@ export default async function TaskPage({
     if ((!signedUrl || signedError) && admin) {
       const signedB = await admin.storage
         .from("asignaciones")
-        .createSignedUrl(row.submission_path, 60);
+        .createSignedUrl(path, 60);
       signedUrl = signedB.data?.signedUrl ?? null;
       signedError = signedB.error;
     }
