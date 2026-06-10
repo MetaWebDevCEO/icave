@@ -80,13 +80,22 @@ export function TaskBoard({
   tasks,
   onSubmit,
   onDownload,
+  onGetPreviewUrl,
+  onSaveComment,
 }: {
   role: UserRole;
   tasks: TaskRow[];
   onSubmit: (formData: FormData) => Promise<void>;
   onDownload: (formData: FormData) => Promise<void>;
+  onGetPreviewUrl: (formData: FormData) => Promise<{ ok: true; url: string } | { ok: false; error: string }>;
+  onSaveComment: (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
 }) {
   const [openId, setOpenId] = useState<string | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [commentText, setCommentText] = useState("");
+  const [commentError, setCommentError] = useState<string | null>(null);
+  const [commentOk, setCommentOk] = useState(false);
 
   const selected = useMemo(() => {
     if (!openId) return null;
@@ -98,6 +107,14 @@ export function TaskBoard({
     return normalized.includes("comp") || normalized.includes("done");
   };
 
+  const resetModalState = () => {
+    setPreviewUrl(null);
+    setPreviewError(null);
+    setCommentError(null);
+    setCommentOk(false);
+    setCommentText("");
+  };
+
   return (
     <>
       <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
@@ -105,7 +122,10 @@ export function TaskBoard({
           <button
             key={t.id}
             type="button"
-            onClick={() => setOpenId(t.id)}
+            onClick={() => {
+              resetModalState();
+              setOpenId(t.id);
+            }}
             className="flex flex-col justify-between rounded-lg border border-zinc-200 bg-white p-5 text-left transition-colors hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950 dark:hover:bg-zinc-900/60"
           >
             <div className="min-w-0">
@@ -258,6 +278,98 @@ export function TaskBoard({
                         Descargar PDF
                       </button>
                     </form>
+
+                    {role === "revisor" && (
+                      <div className="mt-2 grid gap-2">
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            setPreviewError(null);
+                            setPreviewUrl(null);
+                            const fd = new FormData();
+                            fd.set("assignment_id", selected.id);
+                            const result = await onGetPreviewUrl(fd);
+                            if (!result.ok) {
+                              setPreviewError(result.error);
+                              return;
+                            }
+                            setPreviewUrl(result.url);
+                          }}
+                          className="inline-flex h-10 w-full items-center justify-center rounded-md bg-zinc-900 px-4 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
+                        >
+                          Ver PDF
+                        </button>
+                        {previewError && (
+                          <div className="rounded-md border border-red-200 bg-red-50 p-3 text-xs text-red-900 dark:border-red-900/40 dark:bg-red-950/40 dark:text-red-100">
+                            {previewError}
+                          </div>
+                        )}
+                        {previewUrl && (
+                          <div className="overflow-hidden rounded-md border border-zinc-200 dark:border-zinc-800">
+                            <iframe
+                              title="Vista previa PDF"
+                              src={previewUrl}
+                              className="h-[520px] w-full bg-white"
+                            />
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {role === "revisor" && (
+                <div className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-black">
+                  <div className="text-sm font-medium text-zinc-950 dark:text-zinc-50">
+                    Comentario
+                  </div>
+                  <div className="mt-2 grid gap-3">
+                    <textarea
+                      value={commentText}
+                      onChange={(e) => {
+                        setCommentText(e.target.value);
+                        setCommentError(null);
+                        setCommentOk(false);
+                      }}
+                      rows={3}
+                      placeholder="Escribe un comentario para el supervisor…"
+                      className="resize-none rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-900 outline-none focus:ring-2 focus:ring-zinc-400 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100"
+                    />
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        setCommentError(null);
+                        setCommentOk(false);
+                        const text = commentText.trim();
+                        if (!text) {
+                          setCommentError("Escribe un comentario antes de enviar.");
+                          return;
+                        }
+                        const fd = new FormData();
+                        fd.set("assignment_id", selected.id);
+                        fd.set("comment", text);
+                        const result = await onSaveComment(fd);
+                        if (!result.ok) {
+                          setCommentError(result.error);
+                          return;
+                        }
+                        setCommentOk(true);
+                      }}
+                      className="inline-flex h-10 items-center justify-center rounded-md bg-zinc-900 px-4 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
+                    >
+                      Enviar comentario
+                    </button>
+                    {commentError && (
+                      <div className="rounded-md border border-red-200 bg-red-50 p-3 text-xs text-red-900 dark:border-red-900/40 dark:bg-red-950/40 dark:text-red-100">
+                        {commentError}
+                      </div>
+                    )}
+                    {commentOk && (
+                      <div className="rounded-md border border-zinc-200 bg-zinc-50 p-3 text-xs text-zinc-900 dark:border-zinc-800 dark:bg-zinc-900/30 dark:text-zinc-100">
+                        Comentario enviado.
+                      </div>
+                    )}
                   </div>
                 </div>
               )}

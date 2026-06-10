@@ -509,6 +509,188 @@ export default async function TaskPage({
     redirect(signedUrl);
   }
 
+  async function getPreviewUrl(formData: FormData) {
+    "use server";
+
+    const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    if (!url || !anonKey || url.includes("__REPLACE_ME__") || anonKey.includes("__REPLACE_ME__")) {
+      return { ok: false as const, error: "Configura Supabase primero (env vars)." };
+    }
+
+    const assignmentId = String(formData.get("assignment_id") ?? "").trim();
+    if (!assignmentId) {
+      return { ok: false as const, error: "Falta assignment_id." };
+    }
+
+    const supabase = await createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) return { ok: false as const, error: "Sesión inválida." };
+
+    const role = await getRoleFromUserRolesTable(supabase, user.id);
+
+    const admin =
+      serviceKey && !serviceKey.includes("__REPLACE_ME__")
+        ? createSupabaseAdminClient(url, serviceKey, {
+            auth: { persistSession: false, autoRefreshToken: false },
+          })
+        : null;
+
+    const select = "id, revisor_id, assigned_to_email, submission_path";
+    const rowA = await supabase
+      .from("asignaciones")
+      .select(select)
+      .eq("id", assignmentId)
+      .maybeSingle();
+
+    let row = rowA.data as
+      | { revisor_id?: string | null; assigned_to_email?: string | null; submission_path?: string | null }
+      | null;
+    let rowError = rowA.error;
+
+    if ((!row || rowError) && admin) {
+      const rowB = await admin
+        .from("asignaciones")
+        .select(select)
+        .eq("id", assignmentId)
+        .maybeSingle();
+      row = rowB.data as
+        | { revisor_id?: string | null; assigned_to_email?: string | null; submission_path?: string | null }
+        | null;
+      rowError = rowB.error;
+    }
+
+    if (rowError) return { ok: false as const, error: rowError.message };
+    if (!row?.submission_path) return { ok: false as const, error: "No hay entrega para ver." };
+
+    const userEmail = normalizeEmail(user.email);
+    const assignedTo = normalizeEmail(row.assigned_to_email);
+    const canAccess =
+      (role === "usuario" && userEmail && assignedTo && userEmail === assignedTo) ||
+      (role === "revisor" && row.revisor_id === user.id);
+
+    if (!canAccess) return { ok: false as const, error: "No tienes permisos para ver este archivo." };
+
+    const signedA = await supabase.storage
+      .from("asignaciones")
+      .createSignedUrl(row.submission_path, 60);
+
+    let signedUrl = signedA.data?.signedUrl ?? null;
+    let signedError = signedA.error;
+
+    if ((!signedUrl || signedError) && admin) {
+      const signedB = await admin.storage
+        .from("asignaciones")
+        .createSignedUrl(row.submission_path, 60);
+      signedUrl = signedB.data?.signedUrl ?? null;
+      signedError = signedB.error;
+    }
+
+    if (signedError || !signedUrl) {
+      return {
+        ok: false as const,
+        error: signedError?.message ?? "No se pudo generar el enlace.",
+      };
+    }
+
+    return { ok: true as const, url: signedUrl };
+  }
+
+  async function saveComment(formData: FormData) {
+    "use server";
+
+    const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    if (!url || !anonKey || url.includes("__REPLACE_ME__") || anonKey.includes("__REPLACE_ME__")) {
+      return { ok: false as const, error: "Configura Supabase primero (env vars)." };
+    }
+
+    const assignmentId = String(formData.get("assignment_id") ?? "").trim();
+    const comment = String(formData.get("comment") ?? "").trim();
+    if (!assignmentId) return { ok: false as const, error: "Falta assignment_id." };
+    if (!comment) return { ok: false as const, error: "Comentario vacío." };
+
+    const supabase = await createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) return { ok: false as const, error: "Sesión inválida." };
+
+    const role = await getRoleFromUserRolesTable(supabase, user.id);
+    if (role !== "revisor") return { ok: false as const, error: "No tienes permisos para comentar." };
+
+    const admin =
+      serviceKey && !serviceKey.includes("__REPLACE_ME__")
+        ? createSupabaseAdminClient(url, serviceKey, {
+            auth: { persistSession: false, autoRefreshToken: false },
+          })
+        : null;
+
+    const verifyA = await supabase
+      .from("asignaciones")
+      .select("id, revisor_id")
+      .eq("id", assignmentId)
+      .maybeSingle();
+
+    let row = verifyA.data as { revisor_id?: string | null } | null;
+    let rowError = verifyA.error;
+
+    if ((!row || rowError) && admin) {
+      const verifyB = await admin
+        .from("asignaciones")
+        .select("id, revisor_id")
+        .eq("id", assignmentId)
+        .maybeSingle();
+      row = verifyB.data as { revisor_id?: string | null } | null;
+      rowError = verifyB.error;
+    }
+
+    if (rowError) return { ok: false as const, error: rowError.message };
+    if (!row || row.revisor_id !== user.id) {
+      return { ok: false as const, error: "Solo puedes comentar tus asignaciones." };
+    }
+
+    const payload: Record<string, unknown> = {
+      reviewer_comment: comment,
+      reviewer_comment_at: new Date().toISOString(),
+    };
+
+    const updatedA = await supabase.from("asignaciones").update(payload).eq("id", assignmentId);
+    let updateError = updatedA.error;
+
+    if (updateError && admin) {
+      const updatedB = await admin.from("asignaciones").update(payload).eq("id", assignmentId);
+      updateError = updatedB.error;
+    }
+
+    if (updateError) {
+      const msg = (updateError.message ?? "").toLowerCase();
+      const code = (updateError as unknown as { code?: string } | null)?.code ?? "";
+      const schemaMismatch =
+        msg.includes("schema cache") ||
+        msg.includes("could not find") ||
+        msg.includes("does not exist") ||
+        code === "PGRST204";
+
+      if (schemaMismatch) {
+        return {
+          ok: false as const,
+          error: "Faltan columnas para guardar el comentario (reviewer_comment, reviewer_comment_at).",
+        };
+      }
+
+      return { ok: false as const, error: updateError.message };
+    }
+
+    return { ok: true as const };
+  }
+
   return (
     <PlatformShell
       sections={sections}
@@ -616,6 +798,8 @@ export default async function TaskPage({
             tasks={assignments}
             onSubmit={submitWork}
             onDownload={downloadSubmission}
+            onGetPreviewUrl={getPreviewUrl}
+            onSaveComment={saveComment}
           />
         )}
       </div>
