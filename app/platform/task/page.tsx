@@ -254,6 +254,7 @@ export default async function TaskPage({
 
     const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
     const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
     if (!url || !anonKey || url.includes("__REPLACE_ME__") || anonKey.includes("__REPLACE_ME__")) {
       redirect("/?error=" + encodeURIComponent("Configura Supabase primero (env vars)."));
     }
@@ -301,17 +302,37 @@ export default async function TaskPage({
       redirect("/platform/task?error=" + encodeURIComponent("No se encontró tu correo."));
     }
 
-    const verify = await supabase
+    const admin =
+      serviceKey && !serviceKey.includes("__REPLACE_ME__")
+        ? createSupabaseAdminClient(url, serviceKey, {
+            auth: { persistSession: false, autoRefreshToken: false },
+          })
+        : null;
+
+    const verifyA = await supabase
       .from("asignaciones")
       .select("id, assigned_to_email")
       .eq("id", assignmentId)
       .maybeSingle();
 
-    if (verify.error) {
-      redirect("/platform/task?error=" + encodeURIComponent(verify.error.message));
+    let verifyRow = verifyA.data as { assigned_to_email?: string | null } | null;
+    let verifyError = verifyA.error;
+
+    if ((!verifyRow || verifyError) && admin) {
+      const verifyB = await admin
+        .from("asignaciones")
+        .select("id, assigned_to_email")
+        .eq("id", assignmentId)
+        .maybeSingle();
+      verifyRow = verifyB.data as { assigned_to_email?: string | null } | null;
+      verifyError = verifyB.error;
     }
 
-    const assignedTo = normalizeEmail((verify.data as { assigned_to_email?: string | null } | null)?.assigned_to_email);
+    if (verifyError) {
+      redirect("/platform/task?error=" + encodeURIComponent(verifyError.message));
+    }
+
+    const assignedTo = normalizeEmail(verifyRow?.assigned_to_email);
     if (!assignedTo || assignedTo !== userEmail) {
       redirect("/platform/task?error=" + encodeURIComponent("Esta tarea no está asignada a tu usuario."));
     }
@@ -319,15 +340,42 @@ export default async function TaskPage({
     const safeName = sanitizeFileName(name) || "archivo.pdf";
     const objectPath = `entregas/${user.id}/${assignmentId}/${Date.now()}-${safeName}`;
 
-    const upload = await supabase.storage
-      .from("asignaciones")
-      .upload(objectPath, new File([bytes], safeName, { type: "application/pdf" }), {
+    const fileToUpload = new File([bytes], safeName, { type: "application/pdf" });
+
+    const uploadA = await supabase.storage.from("asignaciones").upload(objectPath, fileToUpload, {
+      contentType: "application/pdf",
+      upsert: false,
+    });
+
+    if (uploadA.error && admin) {
+      const uploadB = await admin.storage.from("asignaciones").upload(objectPath, fileToUpload, {
         contentType: "application/pdf",
         upsert: false,
       });
 
-    if (upload.error) {
-      redirect("/platform/task?error=" + encodeURIComponent(upload.error.message));
+      if (uploadB.error) {
+        redirect("/platform/task?error=" + encodeURIComponent(uploadB.error.message));
+      }
+    } else if (uploadA.error) {
+      redirect("/platform/task?error=" + encodeURIComponent(uploadA.error.message));
+    }
+
+    const statusUpdateA = await supabase
+      .from("asignaciones")
+      .update({ status: "Completada" })
+      .eq("id", assignmentId);
+
+    let statusError = statusUpdateA.error;
+    if (statusError && admin) {
+      const statusUpdateB = await admin
+        .from("asignaciones")
+        .update({ status: "Completada" })
+        .eq("id", assignmentId);
+      statusError = statusUpdateB.error;
+    }
+
+    if (statusError) {
+      redirect("/platform/task?error=" + encodeURIComponent(statusError.message));
     }
 
     const updatePayload: Record<string, unknown> = {
@@ -338,10 +386,17 @@ export default async function TaskPage({
       submitted_by_email: userEmail,
     };
 
-    const updated = await supabase.from("asignaciones").update(updatePayload).eq("id", assignmentId);
-    if (updated.error) {
-      const msg = (updated.error.message ?? "").toLowerCase();
-      const code = (updated.error as unknown as { code?: string } | null)?.code ?? "";
+    const updatedA = await supabase.from("asignaciones").update(updatePayload).eq("id", assignmentId);
+    let updateError = updatedA.error;
+
+    if (updateError && admin) {
+      const updatedB = await admin.from("asignaciones").update(updatePayload).eq("id", assignmentId);
+      updateError = updatedB.error;
+    }
+
+    if (updateError) {
+      const msg = (updateError.message ?? "").toLowerCase();
+      const code = (updateError as unknown as { code?: string } | null)?.code ?? "";
       const schemaMismatch =
         msg.includes("schema cache") ||
         msg.includes("could not find") ||
@@ -349,7 +404,7 @@ export default async function TaskPage({
         code === "PGRST204";
 
       if (!schemaMismatch) {
-        redirect("/platform/task?error=" + encodeURIComponent(updated.error.message));
+        redirect("/platform/task?error=" + encodeURIComponent(updateError.message));
       }
     }
 
