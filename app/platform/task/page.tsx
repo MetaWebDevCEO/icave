@@ -187,6 +187,8 @@ export default async function TaskPage({
 
   const selectFieldsBase =
     "id, created_at, status, title, description, due_at, priority, revisor_id, assigned_to_email";
+  const selectFieldsMid =
+    "id, created_at, status, title, description, due_at, priority, revisor_id, assigned_to_email, submission_path, submitted_at, submitted_by_email";
   const selectFieldsExtended =
     "id, created_at, status, title, description, due_at, priority, revisor_id, assigned_to_email, submission_name, submission_path, submitted_at, submitted_by_email";
 
@@ -213,6 +215,16 @@ export default async function TaskPage({
       .limit(200);
 
     if (isSchemaMismatch(extended.error)) {
+      const mid = await client
+        .from("asignaciones")
+        .select(selectFieldsMid)
+        .ilike("assigned_to_email", userEmail)
+        .order("due_at", { ascending: true })
+        .order("created_at", { ascending: false })
+        .limit(200);
+
+      if (!isSchemaMismatch(mid.error)) return mid;
+
       return client
         .from("asignaciones")
         .select(selectFieldsBase)
@@ -235,6 +247,16 @@ export default async function TaskPage({
       .limit(200);
 
     if (isSchemaMismatch(extended.error)) {
+      const mid = await client
+        .from("asignaciones")
+        .select(selectFieldsMid)
+        .eq("revisor_id", user.id)
+        .order("due_at", { ascending: true })
+        .order("created_at", { ascending: false })
+        .limit(200);
+
+      if (!isSchemaMismatch(mid.error)) return mid;
+
       return client
         .from("asignaciones")
         .select(selectFieldsBase)
@@ -416,44 +438,33 @@ export default async function TaskPage({
       submitted_by_email: userEmail,
     };
 
-    const updatedA = await supabase.from("asignaciones").update(fullPayload).eq("id", assignmentId);
-    let updateError = updatedA.error;
+    const tryUpdate = async (payload: Record<string, unknown>) => {
+      const a = await supabase.from("asignaciones").update(payload).eq("id", assignmentId);
+      if (!a.error) return { error: null as PostgrestError | null };
+      if (!admin) return { error: a.error };
+      const b = await admin.from("asignaciones").update(payload).eq("id", assignmentId);
+      return { error: b.error };
+    };
 
-    if (updateError && admin) {
-      const updatedB = await admin.from("asignaciones").update(fullPayload).eq("id", assignmentId);
-      updateError = updatedB.error;
+    let update = await tryUpdate(fullPayload);
+
+    if (isSchemaMismatch(update.error)) {
+      const midPayload: Record<string, unknown> = {
+        status: "Completada",
+        submission_path: objectPath,
+        submitted_at: new Date().toISOString(),
+        submitted_by_email: userEmail,
+      };
+
+      update = await tryUpdate(midPayload);
     }
 
-    if (updateError) {
-      const msg = (updateError.message ?? "").toLowerCase();
-      const code = (updateError as unknown as { code?: string } | null)?.code ?? "";
-      const schemaMismatch =
-        msg.includes("schema cache") ||
-        msg.includes("could not find") ||
-        msg.includes("does not exist") ||
-        code === "PGRST204";
+    if (isSchemaMismatch(update.error)) {
+      update = await tryUpdate({ status: "Completada" });
+    }
 
-      if (schemaMismatch) {
-        const statusA = await supabase
-          .from("asignaciones")
-          .update({ status: "Completada" })
-          .eq("id", assignmentId);
-
-        let statusError = statusA.error;
-        if (statusError && admin) {
-          const statusB = await admin
-            .from("asignaciones")
-            .update({ status: "Completada" })
-            .eq("id", assignmentId);
-          statusError = statusB.error;
-        }
-
-        if (statusError) {
-          redirect("/platform/task?error=" + encodeURIComponent(statusError.message));
-        }
-      } else {
-        redirect("/platform/task?error=" + encodeURIComponent(updateError.message));
-      }
+    if (update.error) {
+      redirect("/platform/task?error=" + encodeURIComponent(update.error.message));
     }
 
     redirect("/platform/task?message=" + encodeURIComponent("Entrega enviada."));
@@ -654,23 +665,31 @@ export default async function TaskPage({
     const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
     const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
     if (!url || !anonKey || url.includes("__REPLACE_ME__") || anonKey.includes("__REPLACE_ME__")) {
-      return { ok: false as const, error: "Configura Supabase primero (env vars)." };
+      redirect("/?error=" + encodeURIComponent("Configura Supabase primero (env vars)."));
     }
 
     const assignmentId = String(formData.get("assignment_id") ?? "").trim();
     const comment = String(formData.get("comment") ?? "").trim();
-    if (!assignmentId) return { ok: false as const, error: "Falta assignment_id." };
-    if (!comment) return { ok: false as const, error: "Comentario vacío." };
+    if (!assignmentId) {
+      redirect("/platform/task?error=" + encodeURIComponent("Falta assignment_id."));
+    }
+    if (!comment) {
+      redirect("/platform/task?error=" + encodeURIComponent("Comentario vacío."));
+    }
 
     const supabase = await createClient();
     const {
       data: { user },
     } = await supabase.auth.getUser();
 
-    if (!user) return { ok: false as const, error: "Sesión inválida." };
+    if (!user) {
+      redirect("/platform/task?error=" + encodeURIComponent("Sesión inválida."));
+    }
 
     const role = await getRoleFromUserRolesTable(supabase, user.id);
-    if (role !== "revisor") return { ok: false as const, error: "No tienes permisos para comentar." };
+    if (role !== "revisor") {
+      redirect("/platform/task?error=" + encodeURIComponent("No tienes permisos para comentar."));
+    }
 
     const admin =
       serviceKey && !serviceKey.includes("__REPLACE_ME__")
@@ -698,9 +717,11 @@ export default async function TaskPage({
       rowError = verifyB.error;
     }
 
-    if (rowError) return { ok: false as const, error: rowError.message };
+    if (rowError) {
+      redirect("/platform/task?error=" + encodeURIComponent(rowError.message));
+    }
     if (!row || row.revisor_id !== user.id) {
-      return { ok: false as const, error: "Solo puedes comentar tus asignaciones." };
+      redirect("/platform/task?error=" + encodeURIComponent("Solo puedes comentar tus asignaciones."));
     }
 
     const payload: Record<string, unknown> = {
@@ -726,16 +747,18 @@ export default async function TaskPage({
         code === "PGRST204";
 
       if (schemaMismatch) {
-        return {
-          ok: false as const,
-          error: "Faltan columnas para guardar el comentario (reviewer_comment, reviewer_comment_at).",
-        };
+        redirect(
+          "/platform/task?error=" +
+            encodeURIComponent(
+              "Faltan columnas para guardar el comentario (reviewer_comment, reviewer_comment_at)."
+            )
+        );
       }
 
-      return { ok: false as const, error: updateError.message };
+      redirect("/platform/task?error=" + encodeURIComponent(updateError.message));
     }
 
-    return { ok: true as const };
+    redirect("/platform/task?message=" + encodeURIComponent("Comentario enviado."));
   }
 
   return (
@@ -845,7 +868,6 @@ export default async function TaskPage({
             tasks={assignments}
             onSubmit={submitWork}
             onDownload={downloadSubmission}
-            onGetPreviewUrl={getPreviewUrl}
             onSaveComment={saveComment}
           />
         )}
