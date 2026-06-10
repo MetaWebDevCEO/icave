@@ -9,6 +9,8 @@ import {
   type SupabaseClient,
 } from "@supabase/supabase-js";
 
+export const dynamic = "force-dynamic";
+
 type UserRole = "revisor" | "usuario";
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 
@@ -370,22 +372,33 @@ export default async function TaskPage({
           })
         : null;
 
-    const verifyA = await supabase
-      .from("asignaciones")
-      .select("id, assigned_to_email, submission_path")
-      .eq("id", assignmentId)
-      .maybeSingle();
-
-    let verifyRow = verifyA.data as { assigned_to_email?: string | null; submission_path?: string | null } | null;
-    let verifyError = verifyA.error;
-
-    if ((!verifyRow || verifyError) && admin) {
-      const verifyB = await admin
+    const fetchVerify = async (client: SupabaseClient) => {
+      const extended = await client
         .from("asignaciones")
         .select("id, assigned_to_email, submission_path")
         .eq("id", assignmentId)
         .maybeSingle();
-      verifyRow = verifyB.data as { assigned_to_email?: string | null; submission_path?: string | null } | null;
+
+      if (!isSchemaMismatch(extended.error)) return extended;
+
+      return client
+        .from("asignaciones")
+        .select("id, assigned_to_email")
+        .eq("id", assignmentId)
+        .maybeSingle();
+    };
+
+    const verifyA = await fetchVerify(supabase);
+    let verifyRow = verifyA.data as
+      | { assigned_to_email?: string | null; submission_path?: string | null }
+      | null;
+    let verifyError = verifyA.error;
+
+    if ((!verifyRow || verifyError) && admin) {
+      const verifyB = await fetchVerify(admin);
+      verifyRow = verifyB.data as
+        | { assigned_to_email?: string | null; submission_path?: string | null }
+        | null;
       verifyError = verifyB.error;
     }
 
@@ -460,7 +473,22 @@ export default async function TaskPage({
     }
 
     if (isSchemaMismatch(update.error)) {
-      update = await tryUpdate({ status: "Completada" });
+      const statusOnly = await tryUpdate({ status: "Completada" });
+      if (!statusOnly.error) {
+        const removeA = await supabase.storage.from("asignaciones").remove([objectPath]);
+        if (removeA.error && admin) {
+          await admin.storage.from("asignaciones").remove([objectPath]);
+        }
+
+        redirect(
+          "/platform/task?error=" +
+            encodeURIComponent(
+              "Tu tabla asignaciones no tiene columnas para guardar la entrega (submission_path, submitted_at, submitted_by_email). Agrega esas columnas para poder ver el PDF en el revisor."
+            )
+        );
+      }
+
+      update = statusOnly;
     }
 
     if (update.error) {
