@@ -634,7 +634,7 @@ export default async function TaskPage({
       redirect("/platform/task?error=" + encodeURIComponent(updateError.message));
     }
 
-    redirect("/platform/task?message=" + encodeURIComponent("Entrega enviada."));
+    redirect("/platform/task");
   }
 
   async function downloadSubmission(formData: FormData) {
