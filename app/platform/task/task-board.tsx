@@ -81,6 +81,33 @@ function extractEntregaPathFromDescription(description: string | null | undefine
   return match?.[1] ?? null;
 }
 
+function extractEntregaMeta(description: string | null | undefined) {
+  const text = description ?? "";
+  const path = /^\s*entrega:\s*(\S+)\s*$/im.exec(text)?.[1] ?? null;
+  const submittedBy = /^\s*entregado por:\s*(.+)\s*$/im.exec(text)?.[1]?.trim() ?? null;
+  const submittedAt = /^\s*entregado el:\s*(.+)\s*$/im.exec(text)?.[1]?.trim() ?? null;
+
+  return { path, submittedBy, submittedAt };
+}
+
+function getVisibleDescription(description: string | null | undefined) {
+  const text = description ?? "";
+  const cleaned = text
+    .split(/\r?\n/)
+    .filter((line) => {
+      const normalized = line.trim().toLowerCase();
+      return (
+        !normalized.startsWith("entrega:") &&
+        !normalized.startsWith("entregado por:") &&
+        !normalized.startsWith("entregado el:")
+      );
+    })
+    .join("\n")
+    .trim();
+
+  return cleaned || null;
+}
+
 export function TaskBoard({
   role,
   tasks,
@@ -101,7 +128,11 @@ export function TaskBoard({
     return tasks.find((t) => t.id === openId) ?? null;
   }, [openId, tasks]);
 
-  const deliveryPath = selected?.submission_path ?? extractEntregaPathFromDescription(selected?.description);
+  const deliveryMeta = extractEntregaMeta(selected?.description);
+  const deliveryPath = selected?.submission_path ?? deliveryMeta.path;
+  const visibleDescription = getVisibleDescription(selected?.description);
+  const submittedAtLabel = selected?.submitted_at ?? deliveryMeta.submittedAt;
+  const submittedByLabel = selected?.submitted_by_email ?? deliveryMeta.submittedBy;
 
   const isCompleted = (status: string | null | undefined) => {
     const normalized = (status ?? "").trim().toLowerCase();
@@ -130,9 +161,9 @@ export function TaskBoard({
                   <div className="truncate text-sm font-semibold text-zinc-950 dark:text-zinc-50">
                     {t.title ?? "Sin título"}
                   </div>
-                  {t.description && (
+                  {getVisibleDescription(t.description) && (
                     <div className="mt-2 line-clamp-3 text-sm text-zinc-600 dark:text-zinc-400">
-                      {t.description}
+                      {getVisibleDescription(t.description)}
                     </div>
                   )}
                 </div>
@@ -160,6 +191,14 @@ export function TaskBoard({
                   {formatShortDate(t.due_at)}
                 </span>
               </div>
+                {(t.submission_path ?? extractEntregaPathFromDescription(t.description)) && (
+                  <div className="flex items-center justify-between gap-3">
+                    <span>Entrega</span>
+                    <span className="font-medium text-emerald-700 dark:text-emerald-300">
+                      Registrada
+                    </span>
+                  </div>
+                )}
             </div>
           </button>
         ))}
@@ -220,7 +259,7 @@ export function TaskBoard({
                   Instrucciones
                 </div>
                 <div className="mt-2 whitespace-pre-wrap text-sm text-zinc-700 dark:text-zinc-300">
-                  {selected.description ?? "Sin instrucciones."}
+                  {visibleDescription ?? "Sin instrucciones."}
                 </div>
               </div>
 
@@ -233,6 +272,19 @@ export function TaskBoard({
                     {isCompleted(selected.status)
                       ? "Completada por el supervisor."
                       : "Aún pendiente de entrega."}
+                  </div>
+                </div>
+              )}
+
+              {role === "usuario" && (
+                <div className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-black">
+                  <div className="text-sm font-medium text-zinc-950 dark:text-zinc-50">
+                    Estado de tu entrega
+                  </div>
+                  <div className="mt-2 text-sm text-zinc-700 dark:text-zinc-300">
+                    {deliveryPath
+                      ? "Tu PDF ya esta guardado y el revisor puede revisarlo."
+                      : "Aun no has subido una entrega para esta tarea."}
                   </div>
                 </div>
               )}
@@ -252,13 +304,13 @@ export function TaskBoard({
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <span className="text-zinc-600 dark:text-zinc-400">Enviado</span>
                       <span className="font-medium">
-                        {formatShortDate(selected.submitted_at)}
+                        {formatShortDate(submittedAtLabel)}
                       </span>
                     </div>
-                    {selected.submitted_by_email && (
+                    {submittedByLabel && (
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <span className="text-zinc-600 dark:text-zinc-400">Por</span>
-                        <span className="font-medium">{selected.submitted_by_email}</span>
+                        <span className="font-medium">{submittedByLabel}</span>
                       </div>
                     )}
                     <form action={onDownload}>
@@ -277,7 +329,7 @@ export function TaskBoard({
 
                     {role === "revisor" && (
                       <div className="mt-2 grid gap-2">
-                        <form action={onDownload} target="_blank">
+                        <form action={onDownload}>
                           <input
                             type="hidden"
                             name="assignment_id"
@@ -329,11 +381,11 @@ export function TaskBoard({
               {role === "usuario" && (
                 <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-4 dark:border-zinc-800 dark:bg-zinc-900/30">
                   <div className="text-sm font-medium text-zinc-950 dark:text-zinc-50">
-                    Subir archivo (PDF)
+                    {deliveryPath ? "Modificar entrega (PDF)" : "Subir archivo (PDF)"}
                   </div>
                   {deliveryPath && (
                     <div className="mt-2 text-sm text-zinc-700 dark:text-zinc-300">
-                      Ya existe una entrega. Puedes reemplazarla subiendo un nuevo PDF.
+                      La entrega actual sigue guardada. Si subes otro PDF, se reemplaza por la nueva version.
                     </div>
                   )}
                   <form action={onSubmit} className="mt-3 grid gap-3">

@@ -203,6 +203,26 @@ function upsertEntregaIntoDescription(
   return base ? `${base}\n\n${meta}` : meta;
 }
 
+async function findSubmissionInStorage(
+  client: SupabaseClient,
+  ownerUserId: string,
+  assignmentId: string
+) {
+  const folder = `entregas/${ownerUserId}/${assignmentId}`;
+  const { data, error } = await client.storage.from("asignaciones").list(folder, {
+    limit: 20,
+    offset: 0,
+  });
+
+  if (error || !data || data.length === 0) return null;
+
+  const exact = data.find((file) => file.name.toLowerCase() === "entrega.pdf");
+  const pdf = exact ?? data.find((file) => file.name.toLowerCase().endsWith(".pdf"));
+  if (!pdf) return null;
+
+  return `${folder}/${pdf.name}`;
+}
+
 export default async function TaskPage({
   searchParams,
 }: {
@@ -231,6 +251,12 @@ export default async function TaskPage({
   const messageParam = getSearchParam(sp, "message");
 
   const userEmail = normalizeEmail(user.email);
+  const admin =
+    serviceKey && !serviceKey.includes("__REPLACE_ME__")
+      ? createSupabaseAdminClient(url, serviceKey, {
+          auth: { persistSession: false, autoRefreshToken: false },
+        })
+      : null;
 
   const selectFieldsBase =
     "id, created_at, status, title, description, due_at, priority, revisor_id, assigned_to_email";
@@ -320,11 +346,9 @@ export default async function TaskPage({
     if (
       (error || data.length === 0) &&
       serviceKey &&
-      !serviceKey.includes("__REPLACE_ME__")
+      !serviceKey.includes("__REPLACE_ME__") &&
+      admin
     ) {
-      const admin = createSupabaseAdminClient(url, serviceKey, {
-        auth: { persistSession: false, autoRefreshToken: false },
-      });
       const second = await fetchSupervisor(admin);
       data = (second.data ?? []) as AssignmentRow[];
       error = second.error;
@@ -333,6 +357,55 @@ export default async function TaskPage({
     const result = await fetchRevisor(supabase);
     data = (result.data ?? []) as AssignmentRow[];
     error = result.error;
+  }
+
+  const rows = data ?? [];
+  const needsStorageLookup = rows.some(
+    (row) => !row.submission_path && !extractEntregaPathFromDescription(row.description)
+  );
+
+  if (needsStorageLookup) {
+    const storageClient = admin ?? supabase;
+    let assignedUserIdByEmail = new Map<string, string>();
+
+    if (role === "revisor" && admin) {
+      const listed = await admin.auth.admin.listUsers({ page: 1, perPage: 200 });
+      assignedUserIdByEmail = new Map(
+        (listed.data?.users ?? [])
+          .map((candidate) => [normalizeEmail(candidate.email), candidate.id] as const)
+          .filter(([email]) => email.length > 0)
+      );
+    }
+
+    data = await Promise.all(
+      rows.map(async (row) => {
+        if (row.submission_path || extractEntregaPathFromDescription(row.description)) {
+          return row;
+        }
+
+        const ownerUserId =
+          role === "usuario"
+            ? user.id
+            : assignedUserIdByEmail.get(normalizeEmail(row.assigned_to_email));
+
+        if (!ownerUserId) return row;
+
+        const submissionPath = await findSubmissionInStorage(storageClient, ownerUserId, row.id);
+        if (!submissionPath) return row;
+
+        return {
+          ...row,
+          status:
+            (row.status ?? "").trim().length > 0 &&
+            ((row.status ?? "").toLowerCase().includes("comp") ||
+              (row.status ?? "").toLowerCase().includes("done"))
+              ? row.status
+              : "Completada",
+          submission_path: submissionPath,
+          submission_name: row.submission_name ?? "entrega.pdf",
+        };
+      })
+    );
   }
 
   const assignments = (data ?? []).filter((row) => {
