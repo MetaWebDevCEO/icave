@@ -223,6 +223,66 @@ async function findSubmissionInStorage(
   return `${folder}/${pdf.name}`;
 }
 
+async function bestEffortSyncSubmission(
+  supabase: SupabaseClient,
+  admin: SupabaseClient | null,
+  assignmentId: string,
+  description: string | null | undefined,
+  objectPath: string,
+  submittedByEmail?: string | null,
+  submittedAtISO?: string | null,
+  submissionName?: string | null
+) {
+  const syncedAt = submittedAtISO ?? new Date().toISOString();
+  const mergedDescription = upsertEntregaIntoDescription(
+    description,
+    objectPath,
+    submittedByEmail ?? "supervisor",
+    syncedAt
+  );
+
+  const fullPayload: Record<string, unknown> = {
+    status: "Completada",
+    description: mergedDescription,
+    submission_path: objectPath,
+    submitted_at: syncedAt,
+    submitted_by_email: submittedByEmail ?? null,
+    submission_name: submissionName ?? "entrega.pdf",
+    submission_mime: "application/pdf",
+  };
+
+  const midPayload: Record<string, unknown> = {
+    status: "Completada",
+    description: mergedDescription,
+    submission_path: objectPath,
+    submitted_at: syncedAt,
+    submitted_by_email: submittedByEmail ?? null,
+  };
+
+  const fallbackPayload: Record<string, unknown> = {
+    status: "Completada",
+    description: mergedDescription,
+  };
+
+  const tryPayload = async (payload: Record<string, unknown>) => {
+    const first = await supabase.from("asignaciones").update(payload).eq("id", assignmentId);
+    if (!first.error) return null;
+    if (!admin) return first.error;
+    const second = await admin.from("asignaciones").update(payload).eq("id", assignmentId);
+    return second.error;
+  };
+
+  let error = await tryPayload(fullPayload);
+  if (isSchemaMismatch(error)) {
+    error = await tryPayload(midPayload);
+  }
+  if (isSchemaMismatch(error)) {
+    error = await tryPayload(fallbackPayload);
+  }
+
+  return error;
+}
+
 export default async function TaskPage({
   searchParams,
 }: {
@@ -393,9 +453,21 @@ export default async function TaskPage({
         const submissionPath = await findSubmissionInStorage(storageClient, ownerUserId, row.id);
         if (!submissionPath) return row;
 
+        const syncError = await bestEffortSyncSubmission(
+          supabase,
+          admin,
+          row.id,
+          row.description,
+          submissionPath,
+          row.submitted_by_email ?? normalizeEmail(row.assigned_to_email),
+          row.submitted_at,
+          row.submission_name ?? "entrega.pdf"
+        );
+
         return {
           ...row,
           status:
+            !syncError &&
             (row.status ?? "").trim().length > 0 &&
             ((row.status ?? "").toLowerCase().includes("comp") ||
               (row.status ?? "").toLowerCase().includes("done"))
@@ -403,6 +475,14 @@ export default async function TaskPage({
               : "Completada",
           submission_path: submissionPath,
           submission_name: row.submission_name ?? "entrega.pdf",
+          submitted_by_email:
+            row.submitted_by_email ?? normalizeEmail(row.assigned_to_email) ?? null,
+          description: upsertEntregaIntoDescription(
+            row.description,
+            submissionPath,
+            (row.submitted_by_email ?? normalizeEmail(row.assigned_to_email)) || "supervisor",
+            row.submitted_at ?? new Date().toISOString()
+          ),
         };
       })
     );
@@ -539,53 +619,19 @@ export default async function TaskPage({
       redirect("/platform/task?error=" + encodeURIComponent(uploadA.error.message));
     }
 
-    const fullPayload: Record<string, unknown> = {
-      status: "Completada",
-      submission_name: safeName,
-      submission_mime: "application/pdf",
-      submission_path: objectPath,
-      submitted_at: new Date().toISOString(),
-      submitted_by_email: userEmail,
-    };
+    const updateError = await bestEffortSyncSubmission(
+      supabase,
+      admin,
+      assignmentId,
+      verifyRow?.description,
+      objectPath,
+      userEmail,
+      new Date().toISOString(),
+      safeName
+    );
 
-    const tryUpdate = async (payload: Record<string, unknown>) => {
-      const a = await supabase.from("asignaciones").update(payload).eq("id", assignmentId);
-      if (!a.error) return { error: null as PostgrestError | null };
-      if (!admin) return { error: a.error };
-      const b = await admin.from("asignaciones").update(payload).eq("id", assignmentId);
-      return { error: b.error };
-    };
-
-    let update = await tryUpdate(fullPayload);
-
-    if (isSchemaMismatch(update.error)) {
-      const midPayload: Record<string, unknown> = {
-        status: "Completada",
-        submission_path: objectPath,
-        submitted_at: new Date().toISOString(),
-        submitted_by_email: userEmail,
-      };
-
-      update = await tryUpdate(midPayload);
-    }
-
-    if (isSchemaMismatch(update.error)) {
-      const nowISO = new Date().toISOString();
-      const updatedDescription = upsertEntregaIntoDescription(
-        verifyRow?.description,
-        objectPath,
-        userEmail,
-        nowISO
-      );
-
-      update = await tryUpdate({
-        status: "Completada",
-        description: updatedDescription,
-      });
-    }
-
-    if (update.error) {
-      redirect("/platform/task?error=" + encodeURIComponent(update.error.message));
+    if (updateError) {
+      redirect("/platform/task?error=" + encodeURIComponent(updateError.message));
     }
 
     redirect("/platform/task?message=" + encodeURIComponent("Entrega enviada."));
