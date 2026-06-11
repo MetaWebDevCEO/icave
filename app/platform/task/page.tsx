@@ -700,7 +700,7 @@ export default async function TaskPage({
     }
     const path = row?.submission_path ?? extractEntregaPathFromDescription(row?.description);
     if (!path) {
-      redirect("/platform/task?error=" + encodeURIComponent("No hay entrega para descargar."));
+      redirect("/platform/task");
     }
 
     const userEmail = normalizeEmail(user.email);
