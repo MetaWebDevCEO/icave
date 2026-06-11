@@ -796,7 +796,7 @@ export default async function TaskPage({
     if (rowError) return { ok: false as const, error: rowError.message };
     if (!row) return { ok: false as const, error: "No se encontró la asignación." };
     const path = row?.submission_path ?? extractEntregaPathFromDescription(row?.description);
-    if (!path) return { ok: false as const, error: "No hay entrega para ver." };
+    if (!path) return { ok: false as const, error: "" };
 
     const userEmail = normalizeEmail(user.email);
     const assignedTo = normalizeEmail(row.assigned_to_email);
