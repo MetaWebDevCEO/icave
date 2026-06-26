@@ -20,6 +20,59 @@ const ROLE_LABELS: Record<AllowedRoleCode, string> = {
   usuario: "Supervisor",
 };
 
+function deriveDisplayName(email: string | null | undefined, metadata: Record<string, unknown>) {
+  const metadataName =
+    typeof metadata.full_name === "string"
+      ? metadata.full_name
+      : typeof metadata.display_name === "string"
+        ? metadata.display_name
+        : typeof metadata.name === "string"
+          ? metadata.name
+          : "";
+
+  if (metadataName.trim()) return metadataName.trim();
+  if (!email) return "Sin nombre";
+
+  const localPart = email.split("@")[0] ?? "usuario";
+  return localPart
+    .replace(/[._-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+async function getSignedAvatarUrl(
+  admin: {
+    storage: {
+      from: (
+        bucket: string
+      ) => {
+        createSignedUrl: (
+          path: string,
+          expiresIn: number
+        ) => Promise<{ data: { signedUrl: string } | null; error: { message: string } | null }>;
+      };
+    };
+  },
+  metadata: Record<string, unknown>
+) {
+  const bucket =
+    typeof metadata.avatar_bucket === "string" && metadata.avatar_bucket.trim()
+      ? metadata.avatar_bucket.trim()
+      : "avatars";
+  const path =
+    typeof metadata.avatar_path === "string" && metadata.avatar_path.trim()
+      ? metadata.avatar_path.trim()
+      : "";
+
+  if (!path) return null;
+
+  const { data, error } = await admin.storage.from(bucket).createSignedUrl(path, 60 * 60);
+  if (error || !data?.signedUrl) return null;
+
+  return data.signedUrl;
+}
+
 function normalizeRoleCode(value: unknown): UserRole | null {
   if (typeof value === "number") {
     if (value === 1) return "revisor";
@@ -319,13 +372,22 @@ export default async function RolesPage({
     roleByUserId[key] = value;
   });
 
-  const clientUsers = users.map((u) => {
-    return {
-      id: u.id,
-      email: u.email ?? null,
-      createdAt: u.created_at ?? null,
-    };
-  });
+  const clientUsers = await Promise.all(
+    users.map(async (u) => {
+      const metadata =
+        u.user_metadata && typeof u.user_metadata === "object"
+          ? (u.user_metadata as Record<string, unknown>)
+          : {};
+
+      return {
+        id: u.id,
+        email: u.email ?? null,
+        createdAt: u.created_at ?? null,
+        displayName: deriveDisplayName(u.email ?? null, metadata),
+        avatarUrl: await getSignedAvatarUrl(admin, metadata),
+      };
+    })
+  );
 
   return (
     <PlatformShell

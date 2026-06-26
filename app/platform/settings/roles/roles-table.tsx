@@ -8,6 +8,8 @@ type UserRow = {
   id: string;
   email: string | null;
   createdAt: string | null;
+  displayName: string;
+  avatarUrl: string | null;
 };
 
 type RoleOption = {
@@ -23,12 +25,6 @@ function titleCase(value: string) {
     .filter(Boolean)
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ");
-}
-
-function formatNameFromEmail(email: string | null) {
-  if (!email) return "Sin nombre";
-  const local = email.split("@")[0] ?? email;
-  return titleCase(local);
 }
 
 function initialsFromName(name: string) {
@@ -121,7 +117,7 @@ export function RolesTable({
           </thead>
           <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
             {users.map((u) => {
-              const name = formatNameFromEmail(u.email);
+              const name = u.displayName || titleCase(u.email?.split("@")[0] ?? "Sin nombre");
               const initials = initialsFromName(name);
               const selected = selectedIds.has(u.id);
               const isOnline = onlineIds.has(u.id);
@@ -148,8 +144,16 @@ export function RolesTable({
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-3">
-                      <div className="flex h-9 w-9 items-center justify-center rounded-full bg-zinc-200 text-xs font-semibold text-zinc-700 dark:bg-zinc-800 dark:text-zinc-200">
-                        {initials}
+                      <div className="flex h-9 w-9 items-center justify-center overflow-hidden rounded-full bg-zinc-200 text-xs font-semibold text-zinc-700 dark:bg-zinc-800 dark:text-zinc-200">
+                        {u.avatarUrl ? (
+                          <img
+                            src={u.avatarUrl}
+                            alt={`Avatar de ${name}`}
+                            className="h-full w-full object-cover"
+                          />
+                        ) : (
+                          initials
+                        )}
                       </div>
                       <div className="min-w-0">
                         <div className="truncate font-medium">{name}</div>
