@@ -61,6 +61,15 @@ export function Navbar({
             {displayLabel}
           </span>
         </button>
+
+        <form action="/auth/signout" method="post">
+          <button
+            type="submit"
+            className="inline-flex h-9 items-center justify-center rounded-md border border-white/20 bg-white/8 px-3 text-sm font-medium text-white transition-colors hover:bg-white/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
+          >
+            Salir
+          </button>
+        </form>
       </div>
     </header>
   );
