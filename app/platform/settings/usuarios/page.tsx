@@ -137,6 +137,9 @@ export default async function UsuariosPage({
   }
 
   const role = await getRoleFromUserRolesTable(user.id);
+  if (role !== "revisor") {
+    redirect("/platform");
+  }
   const sections = buildSections(role);
 
   async function deleteUser(formData: FormData) {
@@ -167,7 +170,7 @@ export default async function UsuariosPage({
     }
 
     const currentRole = await getRoleFromUserRolesTable(user.id);
-    if (currentRole !== "revisor" && currentRole !== "usuario") {
+    if (currentRole !== "revisor") {
       redirect(
         "/platform/settings/usuarios?error=" +
           encodeURIComponent("No tienes permisos para eliminar usuarios.")

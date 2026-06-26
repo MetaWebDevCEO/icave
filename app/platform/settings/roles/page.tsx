@@ -13,6 +13,13 @@ type RoleOption = {
   label: string;
 };
 
+const ALLOWED_ROLE_CODES = ["revisor", "usuario"] as const;
+type AllowedRoleCode = (typeof ALLOWED_ROLE_CODES)[number];
+const ROLE_LABELS: Record<AllowedRoleCode, string> = {
+  revisor: "Revisor",
+  usuario: "Supervisor",
+};
+
 function normalizeRoleCode(value: unknown): UserRole | null {
   if (typeof value === "number") {
     if (value === 1) return "revisor";
@@ -29,6 +36,17 @@ function normalizeRoleCode(value: unknown): UserRole | null {
   if (normalized.includes("revi")) return "revisor";
   if (normalized.includes("admin")) return "usuario";
   if (normalized.includes("usuario")) return "usuario";
+
+  return null;
+}
+
+function normalizeAssignableRoleCode(value: unknown): AllowedRoleCode | null {
+  if (typeof value !== "string") return null;
+
+  const normalized = value.trim().toLowerCase();
+
+  if (normalized === "revisor") return "revisor";
+  if (normalized === "usuario") return "usuario";
 
   return null;
 }
@@ -140,6 +158,9 @@ export default async function RolesPage({
   }
 
   const currentRole = await getRoleFromUserRolesTable(user.id);
+  if (currentRole !== "revisor") {
+    redirect("/platform");
+  }
   const sections = buildSections(currentRole);
 
   const sp = await searchParams;
@@ -202,12 +223,20 @@ export default async function RolesPage({
     }
 
     const targetUserId = String(formData.get("user_id") ?? "");
-    const roleCode = String(formData.get("role_code") ?? "");
+    const rawRoleCode = formData.get("role_code");
 
-    if (!targetUserId || !roleCode) {
+    if (!targetUserId || typeof rawRoleCode !== "string" || !rawRoleCode.trim()) {
       redirect(
         "/platform/settings/roles?error=" +
           encodeURIComponent("Faltan datos para actualizar el rol.")
+      );
+    }
+
+    const roleCode = normalizeAssignableRoleCode(rawRoleCode);
+    if (!roleCode) {
+      redirect(
+        "/platform/settings/roles?error=" +
+          encodeURIComponent("role_code no permitido.")
       );
     }
 
@@ -228,11 +257,9 @@ export default async function RolesPage({
 
   const [
     { data: usersData, error: usersError },
-    { data: rolesData, error: rolesError },
     { data: userRolesData, error: userRolesError },
   ] = await Promise.all([
     admin.auth.admin.listUsers({ page: 1, perPage: 200 }),
-    admin.from("roles").select("code, name"),
     admin.from("user_roles").select("user_id, role_code"),
   ]);
 
@@ -252,9 +279,8 @@ export default async function RolesPage({
     );
   }
 
-  if (rolesError || userRolesError) {
-    const message =
-      rolesError?.message ?? userRolesError?.message ?? "Error desconocido";
+  if (userRolesError) {
+    const message = userRolesError.message ?? "Error desconocido";
     return (
       <PlatformShell
         sections={sections}
@@ -270,44 +296,19 @@ export default async function RolesPage({
     );
   }
 
-  const roleOptionByLabel = new Map<string, RoleOption>();
-  (rolesData ?? []).forEach((r) => {
-    const row = r as { code: unknown; name: unknown };
-    const code = String(row.code);
-    const normalized = code.trim().toLowerCase();
-
-    const label = normalized.includes("revi")
-      ? "Revisor"
-      : normalized.includes("usu") || normalized.includes("admin")
-        ? "Supervisor"
-        : null;
-
-    if (!label) return;
-
-    const existing = roleOptionByLabel.get(label);
-    if (!existing) {
-      roleOptionByLabel.set(label, { code, label });
-      return;
-    }
-
-    if (
-      label === "Supervisor" &&
-      existing.code.trim().toLowerCase().includes("admin") &&
-      normalized.includes("usu")
-    ) {
-      roleOptionByLabel.set(label, { code, label });
-    }
-  });
-
-  const roles: RoleOption[] = ["Supervisor", "Revisor"]
-    .map((label) => roleOptionByLabel.get(label))
-    .filter((v): v is RoleOption => Boolean(v));
+  const roles: RoleOption[] = ALLOWED_ROLE_CODES.slice().reverse().map((code) => ({
+    code,
+    label: ROLE_LABELS[code],
+  }));
 
   const userRoles = new Map<string, string>();
   (userRolesData ?? []).forEach((row) => {
     const r = row as { user_id: unknown; role_code: unknown };
-    if (typeof r.user_id === "string" && typeof r.role_code === "string") {
-      userRoles.set(r.user_id, r.role_code);
+    if (typeof r.user_id === "string") {
+      const roleCode = normalizeRoleCode(r.role_code);
+      if (roleCode) {
+        userRoles.set(r.user_id, roleCode);
+      }
     }
   });
 
