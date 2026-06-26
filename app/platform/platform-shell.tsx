@@ -3,7 +3,6 @@
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 
-import { Navbar } from "@/app/platform/components/navbar";
 import { Sidebar, type SidebarSection } from "@/app/platform/components/sidebar";
 import { createClient } from "@/utils/supabase/client";
 
@@ -50,15 +49,33 @@ export function PlatformShell({
         sections={sections}
         open={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
+        userLabel={currentUserEmail}
       />
 
       <div className="md:pl-64">
-        <Navbar
-          onMenuClick={() => setSidebarOpen(true)}
-          userLabel={currentUserEmail}
-        />
+        <button
+          type="button"
+          aria-label="Abrir menú"
+          onClick={() => setSidebarOpen(true)}
+          className="fixed left-4 top-4 z-30 inline-flex h-10 w-10 items-center justify-center rounded-full border border-zinc-200 bg-white text-zinc-700 shadow-sm transition-colors hover:bg-zinc-50 md:hidden"
+        >
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            xmlns="http://www.w3.org/2000/svg"
+            aria-hidden="true"
+            className="h-4 w-4"
+          >
+            <path
+              d="M4 6h16M4 12h16M4 18h16"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+            />
+          </svg>
+        </button>
 
-        <main className="p-4">
+        <main className="p-4 md:pt-4">
           {children ?? (
             <div className="mx-auto max-w-6xl">
               <div className="grid gap-4 md:grid-cols-3">

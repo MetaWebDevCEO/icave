@@ -1,28 +1,37 @@
 "use client";
 
+import { usePathname } from "next/navigation";
+
+function getPageTitle(pathname: string | null) {
+  if (!pathname || pathname === "/platform") return "Dashboard";
+
+  const segments = pathname
+    .split("/")
+    .filter(Boolean)
+    .filter((segment) => segment !== "platform");
+
+  if (segments.length === 0) return "Dashboard";
+
+  const last = segments[segments.length - 1] ?? "Dashboard";
+  return last.charAt(0).toUpperCase() + last.slice(1).replace(/-/g, " ");
+}
+
 export function Navbar({
   onMenuClick,
-  userLabel,
 }: {
   onMenuClick: () => void;
-  userLabel?: string;
 }) {
-  const displayLabel = (userLabel ?? "Cuenta").trim() || "Cuenta";
-  const initials = displayLabel
-    .split(/[\s@._-]+/g)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((p) => p[0]?.toUpperCase())
-    .join("");
+  const pathname = usePathname();
+  const pageTitle = getPageTitle(pathname);
 
   return (
-    <header className="sticky top-0 z-30 border-b border-[#0A2E16] bg-[#100B40] text-white">
-      <div className="flex h-14 items-center gap-3 px-4">
+    <header className="sticky top-0 z-30 border-b border-zinc-200 bg-white text-zinc-900">
+      <div className="flex h-24 items-center justify-between gap-3 px-4 md:px-5">
         <button
           type="button"
           aria-label="Abrir menú"
           onClick={onMenuClick}
-          className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-white/20 bg-white/10 text-white hover:bg-white/15 md:hidden"
+          className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-zinc-200 bg-white text-zinc-700 shadow-sm transition-colors hover:bg-zinc-50 md:hidden"
         >
           <svg
             viewBox="0 0 24 24"
@@ -40,36 +49,11 @@ export function Navbar({
           </svg>
         </button>
 
-        <div className="flex min-w-0 flex-1 items-center gap-3">
-          <div className="hidden flex-1 md:block">
-            <input
-              type="search"
-              placeholder="Buscar..."
-              className="h-10 w-full rounded-md border border-white/20 bg-white px-3 text-sm text-zinc-950 placeholder:text-zinc-500 outline-none focus:ring-2 focus:ring-white/60"
-            />
-          </div>
+        <div className="min-w-0 flex-1">
+          <h1 className="text-xl font-semibold tracking-tight text-[#23283A] md:text-[2rem]">
+            {pageTitle}
+          </h1>
         </div>
-
-        <button
-          type="button"
-          className="inline-flex h-9 items-center gap-2 rounded-md border border-white/20 bg-white/10 px-3 text-sm text-white hover:bg-white/15"
-        >
-          <span className="flex h-6 w-6 items-center justify-center rounded-full bg-white/20 text-[10px] font-semibold">
-            {initials || "U"}
-          </span>
-          <span className="hidden max-w-[220px] truncate sm:inline">
-            {displayLabel}
-          </span>
-        </button>
-
-        <form action="/auth/signout" method="post">
-          <button
-            type="submit"
-            className="inline-flex h-9 items-center justify-center rounded-md border border-white/20 bg-white/8 px-3 text-sm font-medium text-white transition-colors hover:bg-white/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
-          >
-            Salir
-          </button>
-        </form>
       </div>
     </header>
   );
