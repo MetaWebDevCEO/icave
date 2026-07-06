@@ -1,6 +1,7 @@
 import { PlatformShell } from "@/app/platform/platform-shell";
 import type { SidebarSection } from "@/app/platform/components/sidebar";
 import { createClient } from "@/utils/supabase/server";
+import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { createClient as createSupabaseAdminClient } from "@supabase/supabase-js";
@@ -482,6 +483,8 @@ export default async function AsignacionRevisorPage({
           .eq("id", assignmentId);
       }
     }
+
+    revalidatePath("/platform/revisor/asignacion");
 
     redirect(
       "/platform/revisor/asignacion?message=" +
