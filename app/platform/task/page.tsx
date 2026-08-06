@@ -1,6 +1,7 @@
 import { PlatformShell } from "@/app/platform/platform-shell";
 import type { SidebarSection } from "@/app/platform/components/sidebar";
 import { createClient } from "@/utils/supabase/server";
+
 import { redirect } from "next/navigation";
 import { TaskBoard, type TaskRow } from "@/app/platform/task/task-board";
 import {
