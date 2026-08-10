@@ -1,113 +1,15 @@
 import { PlatformShell } from "@/app/platform/platform-shell";
-import type { SidebarSection } from "@/app/platform/components/sidebar";
 import { createClient } from "@/utils/supabase/server";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import type { SupabaseClient } from "@supabase/supabase-js";
 import { createClient as createSupabaseAdminClient } from "@supabase/supabase-js";
+import {
+  getRoleFromUserRolesTable,
+  buildSections,
+  type UserRole,
+} from "@/lib/platform-roles";
 
-type UserRole = "revisor" | "usuario";
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
-
-function normalizeRoleCode(value: unknown): UserRole | null {
-  if (typeof value === "number") {
-    if (value === 1) return "revisor";
-    if (value === 2) return "usuario";
-    return null;
-  }
-
-  if (typeof value !== "string") return null;
-
-  const normalized = value.trim().toLowerCase();
-
-  if (normalized === "revisor") return "revisor";
-  if (normalized === "usuario") return "usuario";
-
-  if (normalized.includes("revi")) return "revisor";
-  if (normalized.includes("admin")) return "usuario";
-  if (normalized.includes("usuario")) return "usuario";
-  if (normalized.includes("super")) return "usuario";
-
-  return null;
-}
-
-async function getRoleFromUserRolesTable(
-  supabase: SupabaseClient,
-  userId: string
-): Promise<UserRole> {
-  const { data, error } = await supabase
-    .from("user_roles")
-    .select("role_code")
-    .eq("user_id", userId)
-    .maybeSingle();
-
-  if (error) throw error;
-  const role = normalizeRoleCode(data?.role_code);
-  if (!role) throw new Error("Rol inválido");
-  return role;
-}
-
-function buildSections(role: UserRole): SidebarSection[] {
-  const platformTitle =
-    role === "usuario" ? "Plataforma (Supervisor)" : "Plataforma (Revisor)";
-
-  return role === "usuario"
-    ? [
-        {
-          title: platformTitle,
-          items: [
-            { title: "Mi Rendimiento", href: "/platform" },
-            { title: "Status", href: "/platform/status" },
-            { title: "Bandeja de Entrada", href: "/platform/bandeja" },
-            { title: "Task", href: "/platform/task" },
-          ],
-        },
-        {
-          title: "Herramientas",
-          items: [
-            { title: "Chat Directo", href: "/platform/chat" },
-            { title: "Correos", href: "/platform/correos" },
-            { title: "Documentos", href: "/platform/documentos" },
-            { title: "Planificador", href: "/platform/planificador" },
-          ],
-        },
-        {
-          title: "Setting",
-          items: [
-            { title: "Notificaciones", href: "/platform/settings/notificaciones" },
-            { title: "Configuracion", href: "/platform/settings/configuracion" },
-          ],
-        },
-      ]
-    : [
-        {
-          title: platformTitle,
-          items: [
-            { title: "Dashboard", href: "/platform" },
-            { title: "Asignacion", href: "/platform/revisor/asignacion" },
-            { title: "Supervisores", href: "/platform/supervisores" },
-            { title: "Task", href: "/platform/task" },
-          ],
-        },
-        {
-          title: "Herramientas",
-          items: [
-            { title: "Chat Directo", href: "/platform/chat" },
-            { title: "Correos", href: "/platform/correos" },
-            { title: "Documentos", href: "/platform/documentos" },
-            { title: "Planificador", href: "/platform/planificador" },
-          ],
-        },
-        {
-          title: "Setting",
-          items: [
-            { title: "Roles", href: "/platform/settings/roles" },
-            { title: "Usuarios", href: "/platform/settings/usuarios" },
-            { title: "Notificacion", href: "/platform/settings/notificacion" },
-          ],
-        },
-      ];
-}
 
 type AssignmentRow = {
   id: string;
@@ -495,7 +397,6 @@ export default async function AsignacionRevisorPage({
   const { data, error } = await supabase
     .from("asignaciones")
     .select("*")
-    .eq("revisor_id", user.id)
     .order("created_at", { ascending: false })
     .limit(100);
 
