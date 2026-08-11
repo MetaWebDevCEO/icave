@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
 
-export default function SupervisorTaskPage() {
+export default function RevisorTaskPage() {
   redirect("/platform/task");
 }

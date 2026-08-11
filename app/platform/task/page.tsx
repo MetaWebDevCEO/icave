@@ -1,5 +1,4 @@
 import { PlatformShell } from "@/app/platform/platform-shell";
-import type { SidebarSection } from "@/app/platform/components/sidebar";
 import { createClient } from "@/utils/supabase/server";
 
 import { redirect } from "next/navigation";
@@ -9,139 +8,18 @@ import {
   type PostgrestError,
   type SupabaseClient,
 } from "@supabase/supabase-js";
+import {
+  buildSections,
+  resolveRoleForUser,
+  dashboardForRole,
+  type UserRole,
+} from "@/lib/platform-roles";
 
 export const dynamic = "force-dynamic";
 
-type UserRole = "revisor" | "usuario";
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 
 type AssignmentRow = TaskRow & { revisor_id?: string | null };
-
-function isUserRole(value: unknown): value is UserRole {
-  return value === "revisor" || value === "usuario";
-}
-
-function normalizeRole(value: unknown): UserRole | null {
-  if (typeof value !== "string") return null;
-  const normalized = value.trim().toLowerCase();
-  return isUserRole(normalized) ? normalized : null;
-}
-
-function normalizeRoleCode(value: unknown): UserRole | null {
-  if (typeof value === "number") {
-    if (value === 1) return "revisor";
-    if (value === 2) return "usuario";
-    return null;
-  }
-
-  if (typeof value !== "string") return null;
-
-  const normalized = value.trim().toLowerCase();
-
-  if (isUserRole(normalized)) return normalized;
-  if (normalized === "reviewer" || normalized === "rev" || normalized === "r") {
-    return "revisor";
-  }
-  if (normalized === "admin" || normalized === "administrador") {
-    return "usuario";
-  }
-  if (normalized === "sup" || normalized === "s") {
-    return "usuario";
-  }
-  if (normalized.includes("usuario")) return "usuario";
-  if (normalized.includes("super")) return "usuario";
-  if (normalized.includes("revi")) return "revisor";
-
-  return null;
-}
-
-async function getRoleFromUserRolesTable(
-  supabase: SupabaseClient,
-  userId: string
-): Promise<UserRole> {
-  const { data, error } = await supabase
-    .from("user_roles")
-    .select("*")
-    .eq("user_id", userId)
-    .maybeSingle();
-
-  if (error) throw error;
-  if (!data) throw new Error("No existe un registro en user_roles para este usuario");
-
-  const record = data as Record<string, unknown>;
-  const role =
-    normalizeRole(record.role) ??
-    normalizeRole(record.rol) ??
-    normalizeRole(record.user_role) ??
-    normalizeRole(record.tipo) ??
-    normalizeRole(record.type) ??
-    normalizeRoleCode(record.role_code);
-
-  if (!role) throw new Error("Rol inválido");
-  return role;
-}
-
-function buildSections(role: UserRole): SidebarSection[] {
-  const platformTitle =
-    role === "usuario" ? "Plataforma (Supervisor)" : "Plataforma (Revisor)";
-
-  return role === "usuario"
-    ? [
-        {
-          title: platformTitle,
-          items: [
-            { title: "Mi Rendimiento", href: "/platform" },
-            { title: "Status", href: "/platform/status" },
-            { title: "Bandeja de Entrada", href: "/platform/bandeja" },
-            { title: "Task", href: "/platform/task" },
-          ],
-        },
-        {
-          title: "Herramientas",
-          items: [
-            { title: "Chat Directo", href: "/platform/chat" },
-            { title: "Correos", href: "/platform/correos" },
-            { title: "Documentos", href: "/platform/documentos" },
-            { title: "Planificador", href: "/platform/planificador" },
-          ],
-        },
-        {
-          title: "Setting",
-          items: [
-            { title: "Notificaciones", href: "/platform/settings/notificaciones" },
-            { title: "Configuracion", href: "/platform/settings/configuracion" },
-          ],
-        },
-      ]
-    : [
-        {
-          title: platformTitle,
-          items: [
-            { title: "Dashboard", href: "/platform" },
-            { title: "Asignacion", href: "/platform/revisor/asignacion" },
-            { title: "Supervisores", href: "/platform/supervisores" },
-            { title: "Task", href: "/platform/task" },
-          ],
-        },
-        {
-          title: "Herramientas",
-          items: [
-            { title: "Chat Directo", href: "/platform/chat" },
-            { title: "Correos", href: "/platform/correos" },
-            { title: "Documentos", href: "/platform/documentos" },
-            { title: "Planificador", href: "/platform/planificador" },
-          ],
-        },
-        {
-          title: "Setting",
-          items: [
-            { title: "Roles", href: "/platform/settings/roles" },
-            { title: "Usuarios", href: "/platform/settings/usuarios" },
-            { title: "Notificacion", href: "/platform/settings/notificacion" },
-          ],
-        },
-      ];
-}
 
 function getSearchParam(
   sp: Record<string, string | string[] | undefined>,
@@ -304,7 +182,7 @@ export default async function TaskPage({
 
   if (!user) redirect("/");
 
-  const role = await getRoleFromUserRolesTable(supabase, user.id);
+  const role = await resolveRoleForUser(supabase, user.id);
   const sections = buildSections(role);
   const sp = await searchParams;
   const statusFilter = getSearchParam(sp, "status") ?? "all";
@@ -362,6 +240,7 @@ export default async function TaskPage({
     const extended = await client
       .from("asignaciones")
       .select(selectFieldsExtended)
+      .eq("revisor_id", user.id)
       .order("due_at", { ascending: true })
       .order("created_at", { ascending: false })
       .limit(200);
@@ -370,6 +249,7 @@ export default async function TaskPage({
       const mid = await client
         .from("asignaciones")
         .select(selectFieldsMid)
+        .eq("revisor_id", user.id)
         .order("due_at", { ascending: true })
         .order("created_at", { ascending: false })
         .limit(200);
@@ -379,6 +259,7 @@ export default async function TaskPage({
       return client
         .from("asignaciones")
         .select(selectFieldsBase)
+        .eq("revisor_id", user.id)
         .order("due_at", { ascending: true })
         .order("created_at", { ascending: false })
         .limit(200);
@@ -511,7 +392,7 @@ export default async function TaskPage({
     } = await supabase.auth.getUser();
     if (!user) redirect("/");
 
-    const role = await getRoleFromUserRolesTable(supabase, user.id);
+    const role = await resolveRoleForUser(supabase, user.id);
     if (role !== "usuario") {
       redirect("/platform/task?error=" + encodeURIComponent("No tienes permisos para entregar."));
     }
@@ -657,7 +538,7 @@ export default async function TaskPage({
 
     if (!user) redirect("/");
 
-    const role = await getRoleFromUserRolesTable(supabase, user.id);
+    const role = await resolveRoleForUser(supabase, user.id);
 
     const admin =
       serviceKey && !serviceKey.includes("__REPLACE_ME__")
@@ -705,7 +586,7 @@ export default async function TaskPage({
     const assignedTo = normalizeEmail(row.assigned_to_email);
     const canAccess =
       (role === "usuario" && userEmail && assignedTo && userEmail === assignedTo) ||
-      role === "revisor";
+      (role === "revisor" && row.revisor_id === user.id);
 
     if (!canAccess) {
       redirect("/platform/task?error=" + encodeURIComponent("No tienes permisos para descargar."));
@@ -758,7 +639,7 @@ export default async function TaskPage({
 
     if (!user) return { ok: false as const, error: "Sesión inválida." };
 
-    const role = await getRoleFromUserRolesTable(supabase, user.id);
+    const role = await resolveRoleForUser(supabase, user.id);
 
     const admin =
       serviceKey && !serviceKey.includes("__REPLACE_ME__")
@@ -800,7 +681,7 @@ export default async function TaskPage({
     const assignedTo = normalizeEmail(row.assigned_to_email);
     const canAccess =
       (role === "usuario" && userEmail && assignedTo && userEmail === assignedTo) ||
-      role === "revisor";
+      (role === "revisor" && row.revisor_id === user.id);
 
     if (!canAccess) return { ok: false as const, error: "No tienes permisos para ver este archivo." };
 
@@ -857,7 +738,7 @@ export default async function TaskPage({
       redirect("/platform/task?error=" + encodeURIComponent("Sesión inválida."));
     }
 
-    const role = await getRoleFromUserRolesTable(supabase, user.id);
+    const role = await resolveRoleForUser(supabase, user.id);
     if (role !== "revisor") {
       redirect("/platform/task?error=" + encodeURIComponent("No tienes permisos para comentar."));
     }
@@ -891,8 +772,8 @@ export default async function TaskPage({
     if (rowError) {
       redirect("/platform/task?error=" + encodeURIComponent(rowError.message));
     }
-    if (!row) {
-      redirect("/platform/task?error=" + encodeURIComponent("No se encontró la asignación."));
+    if (!row || row.revisor_id !== user.id) {
+      redirect("/platform/task?error=" + encodeURIComponent("Solo puedes comentar tus asignaciones."));
     }
 
     const payload: Record<string, unknown> = {
@@ -1017,7 +898,7 @@ export default async function TaskPage({
           <div className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
             {role === "usuario"
               ? "Asignadas a tu correo."
-              : "Todas las asignaciones publicadas."}
+              : "Publicadas por tu cuenta."}
           </div>
         </div>
 

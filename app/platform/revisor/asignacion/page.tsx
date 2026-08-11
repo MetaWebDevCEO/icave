@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createClient as createSupabaseAdminClient } from "@supabase/supabase-js";
 import {
-  getRoleFromUserRolesTable,
+  resolveRoleForUser,
   buildSections,
   type UserRole,
 } from "@/lib/platform-roles";
@@ -138,7 +138,7 @@ export default async function AsignacionRevisorPage({
 
   if (!user) redirect("/");
 
-  const role = await getRoleFromUserRolesTable(supabase, user.id);
+  const role = await resolveRoleForUser(supabase, user.id);
   if (role !== "revisor") redirect("/platform");
 
   const sections = buildSections(role);
@@ -180,7 +180,7 @@ export default async function AsignacionRevisorPage({
 
     if (!user) redirect("/");
 
-    const role = await getRoleFromUserRolesTable(supabase, user.id);
+    const role = await resolveRoleForUser(supabase, user.id);
     if (role !== "revisor") redirect("/platform");
 
     const title = String(formData.get("title") ?? "").trim();
