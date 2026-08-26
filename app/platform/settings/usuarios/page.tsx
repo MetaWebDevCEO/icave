@@ -133,7 +133,7 @@ function buildSections(role: UserRole): SidebarSection[] {
           title: "Setting",
           items: [
             { title: "Notificaciones", href: "/platform/settings/notificaciones" },
-            { title: "Configuracion", href: "/platform/settings/configuracion" },
+            { title: "Configuracion", href: "/platform/configuracion" },
           ],
         },
       ]
@@ -258,7 +258,105 @@ export default async function UsuariosPage({
       );
     }
 
-    redirect("/platform/settings/usuarios?message=" + encodeURIComponent("Usuario eliminado."));
+    redirect("/platform/settings/usuarios?message=" + encodeURIComponent("El usuario se eliminó exitosamente"));
+  }
+
+  async function createUser(formData: FormData) {
+    "use server";
+
+    const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+    if (!url || !anonKey || url.includes("__REPLACE_ME__") || anonKey.includes("__REPLACE_ME__")) {
+      redirect("/?error=" + encodeURIComponent("Configura Supabase primero (env vars)."));
+    }
+
+    if (!serviceKey || serviceKey.includes("__REPLACE_ME__")) {
+      redirect(
+        "/platform/settings/usuarios?error=" +
+          encodeURIComponent("Falta SUPABASE_SERVICE_ROLE_KEY para crear usuarios.")
+      );
+    }
+
+    const supabase = await createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) {
+      redirect("/");
+    }
+
+    const currentRole = await getRoleFromUserRolesTable(user.id);
+    if (currentRole !== "revisor") {
+      redirect(
+        "/platform/settings/usuarios?error=" +
+          encodeURIComponent("No tienes permisos para crear usuarios.")
+      );
+    }
+
+    const nombre = String(formData.get("nombre") ?? "").trim();
+    const correo = String(formData.get("correo") ?? "").trim().toLowerCase();
+    const contrasena = String(formData.get("contrasena") ?? "");
+    const roleCode = String(formData.get("role_code") ?? "usuario").trim().toLowerCase();
+
+    if (!nombre) {
+      redirect(
+        "/platform/settings/usuarios?error=" +
+          encodeURIComponent("El nombre es obligatorio.")
+      );
+    }
+
+    if (!correo || !correo.includes("@")) {
+      redirect(
+        "/platform/settings/usuarios?error=" +
+          encodeURIComponent("El correo es obligatorio y debe ser válido.")
+      );
+    }
+
+    if (!contrasena || contrasena.length < 6) {
+      redirect(
+        "/platform/settings/usuarios?error=" +
+          encodeURIComponent("La contraseña es obligatoria y debe tener al menos 6 caracteres.")
+      );
+    }
+
+    const normalizedRole = normalizeRoleCode(roleCode) ?? "usuario";
+    const roleCodeNumeric = normalizedRole === "revisor" ? 1 : 2;
+
+    const admin = createSupabaseAdminClient(url, serviceKey, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
+
+    const { data: created, error: createError } = await admin.auth.admin.createUser({
+      email: correo,
+      password: contrasena,
+      email_confirm: true,
+      user_metadata: { full_name: nombre, display_name: nombre, name: nombre },
+    });
+
+    if (createError || !created?.user) {
+      redirect(
+        "/platform/settings/usuarios?error=" +
+          encodeURIComponent(createError?.message ?? "No se pudo crear el usuario.")
+      );
+    }
+
+    const { error: roleError } = await admin
+      .from("user_roles")
+      .upsert({ user_id: created.user.id, role_code: roleCodeNumeric }, { onConflict: "user_id" });
+
+    if (roleError) {
+      redirect(
+        "/platform/settings/usuarios?error=" + encodeURIComponent(roleError.message)
+      );
+    }
+
+    redirect(
+      "/platform/settings/usuarios?message=" +
+        encodeURIComponent("El usuario se creó exitosamente")
+    );
   }
 
   if (!serviceKey || serviceKey.includes("__REPLACE_ME__")) {
@@ -310,9 +408,22 @@ export default async function UsuariosPage({
 
   const roles = (rolesData ?? []).map((row) => {
     const r = row as { user_id: unknown; role_code: unknown };
+    const rc = r.role_code;
+    let normalized: string | null = null;
+    if (typeof rc === "number") {
+      normalized = rc === 1 ? "revisor" : rc === 2 ? "usuario" : null;
+    } else if (typeof rc === "string") {
+      const lower = rc.trim().toLowerCase();
+      normalized =
+        lower === "1" || lower.includes("revi")
+          ? "revisor"
+          : lower === "2" || lower.includes("usu") || lower.includes("admin")
+            ? "usuario"
+            : rc || null;
+    }
     return {
       userId: String(r.user_id),
-      roleCode: typeof r.role_code === "string" ? r.role_code : null,
+      roleCode: normalized,
     };
   });
 
@@ -365,6 +476,7 @@ export default async function UsuariosPage({
           roles={roles}
           currentUserId={user.id}
           onDelete={deleteUser}
+          onCreate={createUser}
         />
       </div>
     </PlatformShell>

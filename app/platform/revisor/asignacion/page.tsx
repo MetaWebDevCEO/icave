@@ -8,6 +8,8 @@ import {
   buildSections,
   type UserRole,
 } from "@/lib/platform-roles";
+import { DeleteAssignmentForm } from "./delete-assignment-form";
+import { formatCalendarDateShort } from "@/lib/calendar-date";
 
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 
@@ -162,6 +164,79 @@ export default async function AsignacionRevisorPage({
       .map((v) => v.trim().toLowerCase())
       .filter((v) => isEmail(v))
       .sort((a, b) => a.localeCompare(b));
+  }
+
+  async function deleteAssignment(formData: FormData) {
+    "use server";
+
+    const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    if (!url || !anonKey || url.includes("__REPLACE_ME__") || anonKey.includes("__REPLACE_ME__")) {
+      redirect("/?error=" + encodeURIComponent("Configura Supabase primero (env vars)."));
+    }
+
+    const supabase = await createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) redirect("/");
+
+    const role = await resolveRoleForUser(supabase, user.id);
+    if (role !== "revisor") redirect("/platform");
+
+    const assignmentId = String(formData.get("assignment_id") ?? "").trim();
+    if (!assignmentId) {
+      redirect(
+        "/platform/revisor/asignacion?error=" +
+          encodeURIComponent("Falta el identificador de la asignación.")
+      );
+    }
+
+    const { data: existing, error: fetchError } = await supabase
+      .from("asignaciones")
+      .select("id, revisor_id, attachment_path")
+      .eq("id", assignmentId)
+      .maybeSingle();
+
+    if (fetchError || !existing) {
+      redirect(
+        "/platform/revisor/asignacion?error=" +
+          encodeURIComponent("La asignación no existe o no tienes permiso.")
+      );
+    }
+
+    const row = existing as { id: string; revisor_id?: string | null; attachment_path?: string | null };
+
+    if (!row.revisor_id || row.revisor_id !== user.id) {
+      redirect(
+        "/platform/revisor/asignacion?error=" +
+          encodeURIComponent("Solo puedes eliminar las asignaciones que tú creaste.")
+      );
+    }
+
+    if (row.attachment_path) {
+      await supabase.storage.from("asignaciones").remove([row.attachment_path]).catch(() => null);
+    }
+
+    const { error: deleteError } = await supabase
+      .from("asignaciones")
+      .delete()
+      .eq("id", assignmentId);
+
+    if (deleteError) {
+      redirect(
+        "/platform/revisor/asignacion?error=" +
+          encodeURIComponent(deleteError.message ?? "No se pudo eliminar la asignación.")
+      );
+    }
+
+    revalidatePath("/platform/revisor/asignacion");
+
+    redirect(
+      "/platform/revisor/asignacion?message=" +
+        encodeURIComponent("Asignación eliminada.")
+    );
   }
 
   async function createAssignment(formData: FormData) {
@@ -677,10 +752,10 @@ export default async function AsignacionRevisorPage({
               <div className="grid gap-3">
                 {assignments.map((a) => {
                   const createdLabel = a.created_at
-                    ? new Date(a.created_at).toLocaleDateString()
+                    ? formatCalendarDateShort(a.created_at)
                     : null;
                   const dueLabel = a.due_at
-                    ? new Date(a.due_at).toLocaleDateString()
+                    ? formatCalendarDateShort(a.due_at)
                     : null;
                   const assigned =
                     a.assigned_to_email ??
@@ -745,6 +820,10 @@ export default async function AsignacionRevisorPage({
                           >
                             Abrir
                           </a>
+                          <DeleteAssignmentForm
+                            assignmentId={a.id}
+                            formAction={deleteAssignment}
+                          />
                         </div>
                       </div>
                     </div>

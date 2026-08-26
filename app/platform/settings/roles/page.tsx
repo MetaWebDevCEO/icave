@@ -154,7 +154,7 @@ function buildSections(role: UserRole): SidebarSection[] {
           title: "Setting",
           items: [
             { title: "Notificaciones", href: "/platform/settings/notificaciones" },
-            { title: "Configuracion", href: "/platform/settings/configuracion" },
+            { title: "Configuracion", href: "/platform/configuracion" },
           ],
         },
       ]
@@ -293,13 +293,15 @@ export default async function RolesPage({
       );
     }
 
+    const roleCodeNumeric = roleCode === "revisor" ? 1 : 2;
+
     const admin = createSupabaseAdminClient(url, serviceKey, {
       auth: { persistSession: false, autoRefreshToken: false },
     });
 
     const { error } = await admin
       .from("user_roles")
-      .upsert({ user_id: targetUserId, role_code: roleCode }, { onConflict: "user_id" });
+      .upsert({ user_id: targetUserId, role_code: roleCodeNumeric }, { onConflict: "user_id" });
 
     if (error) {
       redirect("/platform/settings/roles?error=" + encodeURIComponent(error.message));

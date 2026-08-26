@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { formatCalendarDateShort, parseAsCalendarDate } from "@/lib/calendar-date";
 
 type UserRole = "revisor" | "usuario";
 
@@ -13,6 +14,7 @@ export type TaskRow = {
   due_at?: string | null;
   priority?: string | null;
   assigned_to_email?: string | null;
+  revisor_id?: string | null;
   submission_name?: string | null;
   submission_path?: string | null;
   submitted_at?: string | null;
@@ -20,14 +22,7 @@ export type TaskRow = {
 };
 
 function formatShortDate(value: string | null | undefined) {
-  if (!value) return "Sin fecha";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "Sin fecha";
-  return new Intl.DateTimeFormat("es-MX", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "2-digit",
-  }).format(date);
+  return formatCalendarDateShort(value);
 }
 
 function getPriorityTone(priority: string | null | undefined) {
@@ -61,8 +56,8 @@ function getDueTone(value: string | null | undefined, status: string | null | un
     return "text-zinc-500 dark:text-zinc-400";
   }
 
-  const due = new Date(value);
-  if (Number.isNaN(due.getTime())) return "text-zinc-500 dark:text-zinc-400";
+  const due = parseAsCalendarDate(value);
+  if (!due) return "text-zinc-500 dark:text-zinc-400";
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -110,16 +105,20 @@ function getVisibleDescription(description: string | null | undefined) {
 
 export function TaskBoard({
   role,
+  currentUserId,
   tasks,
   onSubmit,
   onDownload,
   onSaveComment,
+  onDelete,
 }: {
   role: UserRole;
+  currentUserId: string;
   tasks: TaskRow[];
   onSubmit: (formData: FormData) => Promise<void>;
   onDownload: (formData: FormData) => Promise<void>;
   onSaveComment: (formData: FormData) => Promise<void>;
+  onDelete: (formData: FormData) => Promise<void>;
 }) {
   const [openId, setOpenId] = useState<string | null>(null);
 
@@ -145,63 +144,97 @@ export function TaskBoard({
   return (
     <>
       <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-        {tasks.map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            onClick={() => {
-              resetModalState();
-              setOpenId(t.id);
-            }}
-            className="flex flex-col justify-between rounded-lg border border-zinc-200 bg-white p-5 text-left transition-colors hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950 dark:hover:bg-zinc-900/60"
-          >
-            <div className="min-w-0">
-              <div className="flex items-start justify-between gap-3">
+        {tasks.map((t) => {
+          const canDelete =
+            role === "revisor" &&
+            t.revisor_id &&
+            t.revisor_id === currentUserId;
+
+          return (
+            <div
+              key={t.id}
+              className="flex flex-col justify-between rounded-lg border border-zinc-200 bg-white text-left dark:border-zinc-800 dark:bg-zinc-950"
+            >
+              <button
+                type="button"
+                onClick={() => {
+                  resetModalState();
+                  setOpenId(t.id);
+                }}
+                className="w-full flex-1 p-5 text-left transition-colors hover:bg-zinc-50 dark:hover:bg-zinc-900/60"
+              >
                 <div className="min-w-0">
-                  <div className="truncate text-sm font-semibold text-zinc-950 dark:text-zinc-50">
-                    {t.title ?? "Sin título"}
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-semibold text-zinc-950 dark:text-zinc-50">
+                        {t.title ?? "Sin título"}
+                      </div>
+                      {getVisibleDescription(t.description) && (
+                        <div className="mt-2 line-clamp-3 text-sm text-zinc-600 dark:text-zinc-400">
+                          {getVisibleDescription(t.description)}
+                        </div>
+                      )}
+                    </div>
+                    <span
+                      className={[
+                        "shrink-0 rounded-full px-2.5 py-1 text-xs font-medium",
+                        getStatusTone(t.status),
+                      ].join(" ")}
+                    >
+                      {t.status ?? "Pendiente"}
+                    </span>
                   </div>
-                  {getVisibleDescription(t.description) && (
-                    <div className="mt-2 line-clamp-3 text-sm text-zinc-600 dark:text-zinc-400">
-                      {getVisibleDescription(t.description)}
+                </div>
+
+                <div className="mt-4 grid gap-2 text-xs text-zinc-600 dark:text-zinc-400">
+                  <div className="flex items-center justify-between gap-3">
+                    <span>Prioridad</span>
+                    <span className={["font-medium", getPriorityTone(t.priority)].join(" ")}>
+                      {t.priority ?? "Media"}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between gap-3">
+                    <span>Fecha límite</span>
+                    <span className={["font-medium", getDueTone(t.due_at, t.status)].join(" ")}>
+                      {formatShortDate(t.due_at)}
+                    </span>
+                  </div>
+                  {(t.submission_path ?? extractEntregaPathFromDescription(t.description)) && (
+                    <div className="flex items-center justify-between gap-3">
+                      <span>Entrega</span>
+                      <span className="font-medium text-emerald-700 dark:text-emerald-300">
+                        Registrada
+                      </span>
                     </div>
                   )}
                 </div>
-                <span
-                  className={[
-                    "shrink-0 rounded-full px-2.5 py-1 text-xs font-medium",
-                    getStatusTone(t.status),
-                  ].join(" ")}
-                >
-                  {t.status ?? "Pendiente"}
-                </span>
-              </div>
-            </div>
+              </button>
 
-            <div className="mt-4 grid gap-2 text-xs text-zinc-600 dark:text-zinc-400">
-              <div className="flex items-center justify-between gap-3">
-                <span>Prioridad</span>
-                <span className={["font-medium", getPriorityTone(t.priority)].join(" ")}>
-                  {t.priority ?? "Media"}
-                </span>
-              </div>
-              <div className="flex items-center justify-between gap-3">
-                <span>Fecha límite</span>
-                <span className={["font-medium", getDueTone(t.due_at, t.status)].join(" ")}>
-                  {formatShortDate(t.due_at)}
-                </span>
-              </div>
-                {(t.submission_path ?? extractEntregaPathFromDescription(t.description)) && (
-                  <div className="flex items-center justify-between gap-3">
-                    <span>Entrega</span>
-                    <span className="font-medium text-emerald-700 dark:text-emerald-300">
-                      Registrada
-                    </span>
-                  </div>
-                )}
+              {canDelete && (
+                <div className="border-t border-zinc-200 px-5 py-3 dark:border-zinc-800">
+                  <form
+                    action={onDelete}
+                    onSubmit={(e) => {
+                      e.stopPropagation();
+                      const ok = window.confirm(
+                        "¿Estás seguro de que deseas eliminar esta asignación? Esta acción no se puede deshacer."
+                      );
+                      if (!ok) e.preventDefault();
+                    }}
+                  >
+                    <input type="hidden" name="assignment_id" value={t.id} />
+                    <button
+                      type="submit"
+                      className="inline-flex h-9 w-full items-center justify-center rounded-md border border-red-200 bg-white px-3 text-xs font-medium text-red-700 hover:bg-red-50 dark:border-red-900/40 dark:bg-black dark:text-red-300 dark:hover:bg-red-950/40"
+                    >
+                      Eliminar
+                    </button>
+                  </form>
+                </div>
+              )}
             </div>
-          </button>
-        ))}
+          );
+        })}
       </div>
 
       {selected && (
@@ -408,6 +441,41 @@ export function TaskBoard({
                   </form>
                 </div>
               )}
+
+              {role === "revisor" &&
+                selected.revisor_id &&
+                selected.revisor_id === currentUserId && (
+                  <div className="rounded-lg border border-red-200 bg-red-50 p-4 dark:border-red-900/40 dark:bg-red-950/30">
+                    <div className="text-sm font-medium text-red-900 dark:text-red-100">
+                      Zona de peligro
+                    </div>
+                    <div className="mt-1 text-sm text-red-800 dark:text-red-200">
+                      Elimina esta asignación y su adjunto de forma permanente.
+                    </div>
+                    <form
+                      action={onDelete}
+                      onSubmit={(e) => {
+                        const ok = window.confirm(
+                          "¿Estás seguro de que deseas eliminar esta asignación? Esta acción no se puede deshacer."
+                        );
+                        if (!ok) e.preventDefault();
+                      }}
+                      className="mt-3"
+                    >
+                      <input
+                        type="hidden"
+                        name="assignment_id"
+                        value={selected.id}
+                      />
+                      <button
+                        type="submit"
+                        className="inline-flex h-10 w-full items-center justify-center rounded-md border border-red-200 bg-white px-4 text-sm font-medium text-red-700 hover:bg-red-100 dark:border-red-900/40 dark:bg-black dark:text-red-300 dark:hover:bg-red-950/40"
+                      >
+                        Eliminar asignación
+                      </button>
+                    </form>
+                  </div>
+                )}
             </div>
           </div>
         </div>

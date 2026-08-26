@@ -111,9 +111,10 @@ function buildSections(role: UserRole): SidebarSection[] {
           ],
         },
         {
-          title: "Configuracion",
+          title: "Setting",
           items: [
-            { title: "Notificaciones", href: "/platform/settings/notificaciones" }
+            { title: "Notificaciones", href: "/platform/settings/notificaciones" },
+            { title: "Configuracion", href: "/platform/configuracion" },
           ],
         },
       ]
@@ -137,11 +138,11 @@ function buildSections(role: UserRole): SidebarSection[] {
           ],
         },
         {
-          title: "Configuracion",
+          title: "Setting",
           items: [
             { title: "Roles", href: "/platform/settings/roles" },
             { title: "Usuarios", href: "/platform/settings/usuarios" },
-            { title: "Configuracion", href: "/platform/configuracion" },
+            { title: "Notificacion", href: "/platform/settings/notificacion" },
           ],
         },
       ];

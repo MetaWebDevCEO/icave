@@ -39,12 +39,20 @@ export function UsersTable({
   roles,
   currentUserId,
   onDelete,
+  onCreate,
 }: {
   users: UserRow[];
   roles: RoleRow[];
   currentUserId: string;
   onDelete: (formData: FormData) => void;
+  onCreate?: (formData: FormData) => void;
 }) {
+  const [createOpen, setCreateOpen] = useState(false);
+  const [formNombre, setFormNombre] = useState("");
+  const [formCorreo, setFormCorreo] = useState("");
+  const [formContrasena, setFormContrasena] = useState("");
+  const [formRol, setFormRol] = useState("usuario");
+  const [showContrasena, setShowContrasena] = useState(false);
   const rolesMap = useMemo(() => {
     const map = new Map<string, string | null>();
     roles.forEach((r) => map.set(r.userId, r.roleCode));
@@ -85,7 +93,147 @@ export function UsersTable({
   const someSelected = selectedIds.size > 0 && selectedIds.size < users.length;
 
   return (
-    <div className="mt-4 overflow-hidden rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
+    <>
+      <div className="mt-4 flex items-center justify-end">
+        {onCreate && (
+          <button
+            type="button"
+            onClick={() => setCreateOpen(true)}
+            className="inline-flex h-9 items-center justify-center rounded-md bg-zinc-900 px-4 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
+          >
+            Crear usuario
+          </button>
+        )}
+      </div>
+
+      {createOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          onClick={() => setCreateOpen(false)}
+        >
+          <div
+            className="w-full max-w-md rounded-2xl border border-zinc-200 bg-white shadow-xl dark:border-zinc-800 dark:bg-zinc-950"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-zinc-200 px-6 py-4 dark:border-zinc-800">
+              <h2 className="text-base font-semibold text-zinc-950 dark:text-zinc-50">
+                Crear nuevo usuario
+              </h2>
+              <button
+                type="button"
+                onClick={() => setCreateOpen(false)}
+                className="inline-flex h-8 w-8 items-center justify-center rounded-md text-zinc-500 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-900"
+                aria-label="Cerrar"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form
+              action={onCreate}
+              className="space-y-4 p-6"
+              onSubmit={() => {
+                setTimeout(() => {
+                  setCreateOpen(false);
+                  setFormNombre("");
+                  setFormCorreo("");
+                  setFormContrasena("");
+                  setFormRol("usuario");
+                }, 0);
+              }}
+            >
+              <div>
+                <label className="mb-1 block text-sm font-medium text-zinc-900 dark:text-zinc-100">
+                  Nombre completo
+                </label>
+                <input
+                  type="text"
+                  name="nombre"
+                  value={formNombre}
+                  onChange={(e) => setFormNombre(e.target.value)}
+                  placeholder="Ej: Juan Pérez"
+                  required
+                  className="w-full h-10 rounded-md border border-zinc-300 bg-white px-3 text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-900 focus:outline-none focus:ring-2 focus:ring-zinc-900/10 dark:border-zinc-700 dark:bg-black dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:border-zinc-50 dark:focus:ring-zinc-50/10"
+                />
+              </div>
+
+              <div>
+                <label className="mb-1 block text-sm font-medium text-zinc-900 dark:text-zinc-100">
+                  Correo electrónico
+                </label>
+                <input
+                  type="email"
+                  name="correo"
+                  value={formCorreo}
+                  onChange={(e) => setFormCorreo(e.target.value)}
+                  placeholder="correo@ejemplo.com"
+                  required
+                  className="w-full h-10 rounded-md border border-zinc-300 bg-white px-3 text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-900 focus:outline-none focus:ring-2 focus:ring-zinc-900/10 dark:border-zinc-700 dark:bg-black dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:border-zinc-50 dark:focus:ring-zinc-50/10"
+                />
+              </div>
+
+              <div>
+                <label className="mb-1 block text-sm font-medium text-zinc-900 dark:text-zinc-100">
+                  Contraseña
+                </label>
+                <div className="relative">
+                  <input
+                    type={showContrasena ? "text" : "password"}
+                    name="contrasena"
+                    value={formContrasena}
+                    onChange={(e) => setFormContrasena(e.target.value)}
+                    placeholder="Mínimo 6 caracteres"
+                    minLength={6}
+                    required
+                    className="w-full h-10 rounded-md border border-zinc-300 bg-white px-3 pr-16 text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-900 focus:outline-none focus:ring-2 focus:ring-zinc-900/10 dark:border-zinc-700 dark:bg-black dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:border-zinc-50 dark:focus:ring-zinc-50/10"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowContrasena((v) => !v)}
+                    className="absolute inset-y-0 right-0 flex h-full w-14 items-center justify-center text-xs font-medium text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-50"
+                    tabIndex={-1}
+                  >
+                    {showContrasena ? "Ocultar" : "Ver"}
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label className="mb-1 block text-sm font-medium text-zinc-900 dark:text-zinc-100">
+                  Rol
+                </label>
+                <select
+                  name="role_code"
+                  value={formRol}
+                  onChange={(e) => setFormRol(e.target.value)}
+                  className="w-full h-10 rounded-md border border-zinc-300 bg-white px-3 text-sm text-zinc-900 focus:border-zinc-900 focus:outline-none focus:ring-2 focus:ring-zinc-900/10 dark:border-zinc-700 dark:bg-black dark:text-zinc-100 dark:focus:border-zinc-50 dark:focus:ring-zinc-50/10"
+                >
+                  <option value="usuario">Supervisor</option>
+                  <option value="revisor">Revisor</option>
+                </select>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-zinc-100 dark:border-zinc-900">
+                <button
+                  type="button"
+                  onClick={() => setCreateOpen(false)}
+                  className="inline-flex h-9 items-center justify-center rounded-md border border-zinc-200 bg-white px-4 text-sm font-medium text-zinc-700 hover:bg-zinc-50 dark:border-zinc-800 dark:bg-black dark:text-zinc-300 dark:hover:bg-zinc-900/60"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  className="inline-flex h-9 items-center justify-center rounded-md bg-zinc-900 px-4 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
+                >
+                  Crear
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      <div className="mt-4 overflow-hidden rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
       <div className="overflow-auto">
         <table className="w-full text-sm">
           <thead className="bg-zinc-50 text-left text-xs text-zinc-500 dark:bg-zinc-900/40 dark:text-zinc-400">
@@ -216,5 +364,6 @@ export function UsersTable({
         </table>
       </div>
     </div>
+    </>
   );
 }

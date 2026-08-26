@@ -118,8 +118,8 @@ export const REVISOR_ROUTES = {
   correos: "/platform/correos",
   documentos: "/platform/documentos",
   planificador: "/platform/planificador",
-  roles: "/platform/revisor/settings/roles",
-  usuarios: "/platform/revisor/settings/usuarios",
+  roles: "/platform/settings/roles",
+  usuarios: "/platform/settings/usuarios",
   notificacion: "/platform/settings/notificacion",
   notificaciones: "/platform/settings/notificaciones",
 } as const;
@@ -135,7 +135,7 @@ export const SUPERVISOR_ROUTES = {
   documentos: "/platform/documentos",
   planificador: "/platform/planificador",
   notificaciones: "/platform/settings/notificaciones",
-  configuracion: "/platform/supervisor/configuracion",
+  configuracion: "/platform/configuracion",
 } as const;
 
 export function buildRevisorSections(): SidebarSection[] {

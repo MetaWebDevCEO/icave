@@ -7,6 +7,7 @@ import {
   type PostgrestError,
   type SupabaseClient,
 } from "@supabase/supabase-js";
+import { formatCalendarDateShort, parseAsCalendarDate } from "@/lib/calendar-date";
 
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 
@@ -37,14 +38,7 @@ function normalizeEmail(value: string | null | undefined) {
 }
 
 function formatShortDate(value: string | null | undefined) {
-  if (!value) return "Sin fecha";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "Sin fecha";
-  return new Intl.DateTimeFormat("es-MX", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "2-digit",
-  }).format(date);
+  return formatCalendarDateShort(value);
 }
 
 function getStatusTone(status: string | null | undefined) {
@@ -83,8 +77,8 @@ function getDueTone(value: string | null | undefined, status: string | null | un
     return "text-zinc-500 dark:text-zinc-400";
   }
 
-  const due = new Date(value);
-  if (Number.isNaN(due.getTime())) return "text-zinc-500 dark:text-zinc-400";
+  const due = parseAsCalendarDate(value);
+  if (!due) return "text-zinc-500 dark:text-zinc-400";
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);

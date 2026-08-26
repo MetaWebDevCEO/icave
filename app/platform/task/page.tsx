@@ -1,8 +1,8 @@
-import { PlatformShell } from "@/app/platform/platform-shell";
 import { createClient } from "@/utils/supabase/server";
-
+import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { TaskBoard, type TaskRow } from "@/app/platform/task/task-board";
+import type { TaskRow } from "@/app/platform/task/task-board";
+import { TaskPageContent } from "@/app/platform/task/task-page-content";
 import {
   createClient as createSupabaseAdminClient,
   type PostgrestError,
@@ -11,8 +11,6 @@ import {
 import {
   buildSections,
   resolveRoleForUser,
-  dashboardForRole,
-  type UserRole,
 } from "@/lib/platform-roles";
 
 export const dynamic = "force-dynamic";
@@ -240,7 +238,6 @@ export default async function TaskPage({
     const extended = await client
       .from("asignaciones")
       .select(selectFieldsExtended)
-      .eq("revisor_id", user.id)
       .order("due_at", { ascending: true })
       .order("created_at", { ascending: false })
       .limit(200);
@@ -249,7 +246,6 @@ export default async function TaskPage({
       const mid = await client
         .from("asignaciones")
         .select(selectFieldsMid)
-        .eq("revisor_id", user.id)
         .order("due_at", { ascending: true })
         .order("created_at", { ascending: false })
         .limit(200);
@@ -259,7 +255,6 @@ export default async function TaskPage({
       return client
         .from("asignaciones")
         .select(selectFieldsBase)
-        .eq("revisor_id", user.id)
         .order("due_at", { ascending: true })
         .order("created_at", { ascending: false })
         .limit(200);
@@ -293,9 +288,20 @@ export default async function TaskPage({
       error = second.error;
     }
   } else {
-    const result = await fetchRevisor(supabase);
+    const preferredClient = admin ?? supabase;
+    const result = await fetchRevisor(preferredClient);
     data = (result.data ?? []) as AssignmentRow[];
     error = result.error;
+
+    if (
+      (error || data.length === 0) &&
+      admin &&
+      preferredClient !== admin
+    ) {
+      const fallback = await fetchRevisor(admin);
+      data = (fallback.data ?? []) as AssignmentRow[];
+      error = fallback.error;
+    }
   }
 
   const rows = data ?? [];
@@ -376,7 +382,7 @@ export default async function TaskPage({
     return true;
   });
 
-  async function submitWork(formData: FormData) {
+  async function deleteAssignment(formData: FormData) {
     "use server";
 
     const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -392,6 +398,100 @@ export default async function TaskPage({
     } = await supabase.auth.getUser();
     if (!user) redirect("/");
 
+    const role = await resolveRoleForUser(supabase, user.id);
+    if (role !== "revisor") {
+      redirect("/platform/task?error=" + encodeURIComponent("No tienes permisos para eliminar."));
+    }
+
+    const assignmentId = String(formData.get("assignment_id") ?? "").trim();
+    if (!assignmentId) {
+      redirect("/platform/task?error=" + encodeURIComponent("Falta assignment_id."));
+    }
+
+    const admin =
+      serviceKey && !serviceKey.includes("__REPLACE_ME__")
+        ? createSupabaseAdminClient(url, serviceKey, {
+            auth: { persistSession: false, autoRefreshToken: false },
+          })
+        : null;
+
+    const verifyClient = admin ?? supabase;
+    const verify = await verifyClient
+      .from("asignaciones")
+      .select("id, revisor_id, attachment_path")
+      .eq("id", assignmentId)
+      .maybeSingle();
+
+    let row = verify.data as
+      | { id: string; revisor_id?: string | null; attachment_path?: string | null }
+      | null;
+    let verifyError = verify.error;
+
+    if ((!row || verifyError) && admin && verifyClient !== admin) {
+      const fallback = await admin
+        .from("asignaciones")
+        .select("id, revisor_id, attachment_path")
+        .eq("id", assignmentId)
+        .maybeSingle();
+      row = fallback.data as
+        | { id: string; revisor_id?: string | null; attachment_path?: string | null }
+        | null;
+      verifyError = fallback.error;
+    }
+
+    if (verifyError || !row) {
+      redirect(
+        "/platform/task?error=" +
+          encodeURIComponent(verifyError?.message ?? "La asignación no existe.")
+      );
+    }
+
+    if (!row.revisor_id || row.revisor_id !== user.id) {
+      redirect(
+        "/platform/task?error=" +
+          encodeURIComponent("Solo puedes eliminar las asignaciones que tú creaste.")
+      );
+    }
+
+    if (row.attachment_path) {
+      const storageClient = admin ?? supabase;
+      await storageClient.storage
+        .from("asignaciones")
+        .remove([row.attachment_path])
+        .catch(() => null);
+    }
+
+    const deleteClient = admin ?? supabase;
+    const deleted = await deleteClient.from("asignaciones").delete().eq("id", assignmentId);
+
+    if (deleted.error && admin && deleteClient !== admin) {
+      const fallback = await admin.from("asignaciones").delete().eq("id", assignmentId);
+      if (fallback.error) {
+        redirect("/platform/task?error=" + encodeURIComponent(fallback.error.message));
+      }
+    } else if (deleted.error) {
+      redirect("/platform/task?error=" + encodeURIComponent(deleted.error.message));
+    }
+
+    revalidatePath("/platform/task");
+    redirect("/platform/task?message=" + encodeURIComponent("Asignación eliminada."));
+  }
+
+  async function submitWork(formData: FormData) {
+    "use server";
+
+    const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    if (!url || !anonKey || url.includes("__REPLACE_ME__") || anonKey.includes("__REPLACE_ME__")) {
+      redirect("/?error=" + encodeURIComponent("Configura Supabase primero (env vars)."));
+    }
+
+    const supabase = await createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) redirect("/");
     const role = await resolveRoleForUser(supabase, user.id);
     if (role !== "usuario") {
       redirect("/platform/task?error=" + encodeURIComponent("No tienes permisos para entregar."));
@@ -617,99 +717,6 @@ export default async function TaskPage({
     redirect(signedUrl);
   }
 
-  async function getPreviewUrl(formData: FormData) {
-    "use server";
-
-    const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-    const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-    if (!url || !anonKey || url.includes("__REPLACE_ME__") || anonKey.includes("__REPLACE_ME__")) {
-      return { ok: false as const, error: "Configura Supabase primero (env vars)." };
-    }
-
-    const assignmentId = String(formData.get("assignment_id") ?? "").trim();
-    if (!assignmentId) {
-      return { ok: false as const, error: "Falta assignment_id." };
-    }
-
-    const supabase = await createClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-
-    if (!user) return { ok: false as const, error: "Sesión inválida." };
-
-    const role = await resolveRoleForUser(supabase, user.id);
-
-    const admin =
-      serviceKey && !serviceKey.includes("__REPLACE_ME__")
-        ? createSupabaseAdminClient(url, serviceKey, {
-            auth: { persistSession: false, autoRefreshToken: false },
-          })
-        : null;
-
-    const select = "id, revisor_id, assigned_to_email, submission_path, description";
-    const rowA = await supabase
-      .from("asignaciones")
-      .select(select)
-      .eq("id", assignmentId)
-      .maybeSingle();
-
-    let row = rowA.data as
-      | { revisor_id?: string | null; assigned_to_email?: string | null; submission_path?: string | null; description?: string | null }
-      | null;
-    let rowError = rowA.error;
-
-    if ((!row || rowError) && admin) {
-      const rowB = await admin
-        .from("asignaciones")
-        .select(select)
-        .eq("id", assignmentId)
-        .maybeSingle();
-      row = rowB.data as
-        | { revisor_id?: string | null; assigned_to_email?: string | null; submission_path?: string | null; description?: string | null }
-        | null;
-      rowError = rowB.error;
-    }
-
-    if (rowError) return { ok: false as const, error: rowError.message };
-    if (!row) return { ok: false as const, error: "No se encontró la asignación." };
-    const path = row?.submission_path ?? extractEntregaPathFromDescription(row?.description);
-    if (!path) return { ok: false as const, error: "" };
-
-    const userEmail = normalizeEmail(user.email);
-    const assignedTo = normalizeEmail(row.assigned_to_email);
-    const canAccess =
-      (role === "usuario" && userEmail && assignedTo && userEmail === assignedTo) ||
-      (role === "revisor" && row.revisor_id === user.id);
-
-    if (!canAccess) return { ok: false as const, error: "No tienes permisos para ver este archivo." };
-
-    const signedA = await supabase.storage
-      .from("asignaciones")
-      .createSignedUrl(path, 60);
-
-    let signedUrl = signedA.data?.signedUrl ?? null;
-    let signedError = signedA.error;
-
-    if ((!signedUrl || signedError) && admin) {
-      const signedB = await admin.storage
-        .from("asignaciones")
-        .createSignedUrl(path, 60);
-      signedUrl = signedB.data?.signedUrl ?? null;
-      signedError = signedB.error;
-    }
-
-    if (signedError || !signedUrl) {
-      return {
-        ok: false as const,
-        error: signedError?.message ?? "No se pudo generar el enlace.",
-      };
-    }
-
-    return { ok: true as const, url: signedUrl };
-  }
-
   async function saveComment(formData: FormData) {
     "use server";
 
@@ -814,117 +821,22 @@ export default async function TaskPage({
   }
 
   return (
-    <PlatformShell
-      sections={sections}
+    <TaskPageContent
+      role={role}
       currentUserId={user.id}
       currentUserEmail={user.email ?? undefined}
-    >
-      <div className="mx-auto max-w-7xl">
-        <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
-          <div>
-            <h1 className="text-lg font-semibold text-zinc-950 dark:text-zinc-50">
-              Task
-            </h1>
-            <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
-              Actividades asignadas en una vista de tarjetas.
-            </p>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2 text-sm">
-            <a
-              href="/platform/task?status=all"
-              className={[
-                "rounded-full px-3 py-1.5",
-                statusFilter === "all"
-                  ? "bg-zinc-900 text-white dark:bg-zinc-50 dark:text-zinc-900"
-                  : "bg-zinc-100 text-zinc-700 hover:bg-zinc-200 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800",
-              ].join(" ")}
-            >
-              Todas
-            </a>
-            <a
-              href="/platform/task?status=pending"
-              className={[
-                "rounded-full px-3 py-1.5",
-                statusFilter === "pending"
-                  ? "bg-zinc-900 text-white dark:bg-zinc-50 dark:text-zinc-900"
-                  : "bg-zinc-100 text-zinc-700 hover:bg-zinc-200 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800",
-              ].join(" ")}
-            >
-              Pendientes
-            </a>
-            <a
-              href="/platform/task?status=progress"
-              className={[
-                "rounded-full px-3 py-1.5",
-                statusFilter === "progress"
-                  ? "bg-zinc-900 text-white dark:bg-zinc-50 dark:text-zinc-900"
-                  : "bg-zinc-100 text-zinc-700 hover:bg-zinc-200 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800",
-              ].join(" ")}
-            >
-              En curso
-            </a>
-            <a
-              href="/platform/task?status=completed"
-              className={[
-                "rounded-full px-3 py-1.5",
-                statusFilter === "completed"
-                  ? "bg-zinc-900 text-white dark:bg-zinc-50 dark:text-zinc-900"
-                  : "bg-zinc-100 text-zinc-700 hover:bg-zinc-200 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800",
-              ].join(" ")}
-            >
-              Completadas
-            </a>
-          </div>
-        </div>
-
-        {(errorParam || messageParam) && (
-          <div
-            className={[
-              "mt-4 rounded-lg border p-4 text-sm",
-              errorParam
-                ? "border-red-200 bg-red-50 text-red-900 dark:border-red-900/40 dark:bg-red-950/40 dark:text-red-100"
-                : "border-zinc-200 bg-zinc-50 text-zinc-900 dark:border-zinc-800 dark:bg-zinc-900/30 dark:text-zinc-100",
-            ].join(" ")}
-          >
-            {errorParam ?? messageParam}
-          </div>
-        )}
-
-        <div className="mt-4 rounded-lg border border-zinc-200 bg-white px-5 py-4 dark:border-zinc-800 dark:bg-zinc-950">
-          <div className="text-sm font-medium text-zinc-950 dark:text-zinc-50">
-            {assignments.length} actividades
-          </div>
-          <div className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
-            {role === "usuario"
-              ? "Asignadas a tu correo."
-              : "Publicadas por tu cuenta."}
-          </div>
-        </div>
-
-        {error && (
-          <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-900/40 dark:bg-amber-950/40 dark:text-amber-100">
-            {error.message}
-          </div>
-        )}
-
-        {!error && assignments.length === 0 && (
-          <div className="mt-4 rounded-lg border border-zinc-200 bg-white p-6 text-sm text-zinc-600 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-400">
-            No hay actividades para los filtros seleccionados.
-          </div>
-        )}
-
-        {!error && assignments.length > 0 && (
-          <TaskBoard
-            role={role}
-            tasks={assignments}
-            onSubmit={submitWork}
-            onDownload={downloadSubmission}
-            onSaveComment={saveComment}
-          />
-        )}
-      </div>
-    </PlatformShell>
+      sections={sections}
+      statusFilter={statusFilter}
+      error={error}
+      errorParam={errorParam}
+      messageParam={messageParam}
+      assignments={assignments}
+      basePath="/platform/task"
+      onSubmit={submitWork}
+      onDownload={downloadSubmission}
+      onSaveComment={saveComment}
+      onDelete={deleteAssignment}
+    />
   );
 }
 
