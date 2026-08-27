@@ -149,7 +149,7 @@ export function TaskBoard({
   role: UserRole;
   currentUserId: string;
   tasks: TaskRow[];
-  onSubmit: (formData: FormData) => Promise<void | unknown>;
+  onSubmit: (formData: FormData) => void | Promise<void>;
   downloadBasePath: string;
   onSaveComment: (formData: FormData) => Promise<void>;
   onDelete: (formData: FormData) => Promise<void>;
