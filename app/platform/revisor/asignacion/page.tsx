@@ -3,6 +3,7 @@ import { createClient } from "@/utils/supabase/server";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createClient as createSupabaseAdminClient } from "@supabase/supabase-js";
+import type { PostgrestError } from "@supabase/supabase-js";
 import {
   resolveRoleForUser,
   buildSections,
@@ -134,6 +135,12 @@ export default async function AsignacionRevisorPage({
   }
 
   const supabase = await createClient();
+  const admin =
+    serviceKey && !serviceKey.includes("__REPLACE_ME__")
+      ? createSupabaseAdminClient(url, serviceKey, {
+          auth: { persistSession: false, autoRefreshToken: false },
+        })
+      : null;
   const {
     data: { user },
   } = await supabase.auth.getUser();
@@ -171,11 +178,18 @@ export default async function AsignacionRevisorPage({
 
     const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
     const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
     if (!url || !anonKey || url.includes("__REPLACE_ME__") || anonKey.includes("__REPLACE_ME__")) {
       redirect("/?error=" + encodeURIComponent("Configura Supabase primero (env vars)."));
     }
 
     const supabase = await createClient();
+    const admin =
+      serviceKey && !serviceKey.includes("__REPLACE_ME__")
+        ? createSupabaseAdminClient(url, serviceKey, {
+            auth: { persistSession: false, autoRefreshToken: false },
+          })
+        : null;
     const {
       data: { user },
     } = await supabase.auth.getUser();
@@ -193,33 +207,47 @@ export default async function AsignacionRevisorPage({
       );
     }
 
-    const { data: existing, error: fetchError } = await supabase
+    type Row = { id: string; revisor_id?: string | null; attachment_path?: string | null };
+    let existing: Row | null = null;
+    const rowA = await supabase
       .from("asignaciones")
       .select("id, revisor_id, attachment_path")
       .eq("id", assignmentId)
       .maybeSingle();
+    if (rowA.data) {
+      existing = rowA.data as Row;
+    } else if (admin) {
+      const rowB = await admin
+        .from("asignaciones")
+        .select("id, revisor_id, attachment_path")
+        .eq("id", assignmentId)
+        .maybeSingle();
+      if (rowB.data) existing = rowB.data as Row;
+    }
 
-    if (fetchError || !existing) {
+    if (!existing) {
       redirect(
         "/platform/revisor/asignacion?error=" +
           encodeURIComponent("La asignación no existe o no tienes permiso.")
       );
     }
 
-    const row = existing as { id: string; revisor_id?: string | null; attachment_path?: string | null };
-
-    if (!row.revisor_id || row.revisor_id !== user.id) {
+    if (!existing.revisor_id || existing.revisor_id !== user.id) {
       redirect(
         "/platform/revisor/asignacion?error=" +
           encodeURIComponent("Solo puedes eliminar las asignaciones que tú creaste.")
       );
     }
 
-    if (row.attachment_path) {
-      await supabase.storage.from("asignaciones").remove([row.attachment_path]).catch(() => null);
+    if (existing.attachment_path) {
+      await (admin ?? supabase).storage
+        .from("asignaciones")
+        .remove([existing.attachment_path])
+        .catch(() => null);
     }
 
-    const { error: deleteError } = await supabase
+    const writeClient = (admin ?? supabase);
+    const { error: deleteError } = await writeClient
       .from("asignaciones")
       .delete()
       .eq("id", assignmentId);
@@ -244,11 +272,18 @@ export default async function AsignacionRevisorPage({
 
     const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
     const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
     if (!url || !anonKey || url.includes("__REPLACE_ME__") || anonKey.includes("__REPLACE_ME__")) {
       redirect("/?error=" + encodeURIComponent("Configura Supabase primero (env vars)."));
     }
 
     const supabase = await createClient();
+    const admin =
+      serviceKey && !serviceKey.includes("__REPLACE_ME__")
+        ? createSupabaseAdminClient(url, serviceKey, {
+            auth: { persistSession: false, autoRefreshToken: false },
+          })
+        : null;
     const {
       data: { user },
     } = await supabase.auth.getUser();
@@ -368,13 +403,15 @@ export default async function AsignacionRevisorPage({
     payloadFull.notify_at = computeNotifyAtISO(priority, dueDate);
     payloadFull.assigned_to_email = assignedEmail;
 
+    const writeClient = (admin ?? supabase);
+
     const tryInsert = async (payload: Record<string, unknown>) => {
-      const { data, error } = await supabase
+      const res = await writeClient
         .from("asignaciones")
         .insert(payload)
         .select("id")
         .maybeSingle();
-      return { data: data as { id?: string } | null, error };
+      return { data: (res.data ?? null) as { id?: string } | null, error: res.error };
     };
 
     let inserted = await tryInsert(payloadFull);
@@ -442,7 +479,9 @@ export default async function AsignacionRevisorPage({
     if (fileToUpload) {
       const safeName = sanitizeFileName(fileToUpload.name || "archivo.pdf") || "archivo.pdf";
       const objectPath = `asignaciones/${user.id}/${assignmentId}/${Date.now()}-${safeName}`;
-      const upload = await supabase.storage
+
+      const storageClient = (admin ?? supabase);
+      const upload = await storageClient.storage
         .from("asignaciones")
         .upload(objectPath, fileToUpload, {
           contentType: "application/pdf",
@@ -450,7 +489,8 @@ export default async function AsignacionRevisorPage({
         });
 
       if (!upload.error) {
-        await supabase
+        const updateClient = (admin ?? supabase);
+        await updateClient
           .from("asignaciones")
           .update({
             attachment_name: safeName,
@@ -469,13 +509,39 @@ export default async function AsignacionRevisorPage({
     );
   }
 
-  const { data, error } = await supabase
-    .from("asignaciones")
-    .select("*")
-    .order("created_at", { ascending: false })
-    .limit(100);
+  const readClient = (admin ?? supabase);
+  let listData: unknown[] = [];
+  let listError: PostgrestError | null = null;
 
-  const allAssignments = (data ?? []) as AssignmentRow[];
+  if (admin) {
+    const res = await admin
+      .from("asignaciones")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .limit(100);
+    listData = (res.data ?? []) as unknown[];
+    listError = res.error;
+  } else {
+    const tryA = await supabase
+      .from("asignaciones")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .limit(100);
+    if (tryA.data && tryA.data.length > 0) {
+      listData = tryA.data as unknown[];
+      listError = tryA.error;
+    } else {
+      const res = await readClient
+        .from("asignaciones")
+        .select("*")
+        .order("created_at", { ascending: false })
+        .limit(100);
+      listData = (res.data ?? []) as unknown[];
+      listError = res.error ?? tryA.error;
+    }
+  }
+
+  const allAssignments = (listData ?? []) as AssignmentRow[];
   const assignments =
     statusFilter && statusFilter !== "all"
       ? allAssignments.filter((a) =>
@@ -736,19 +802,19 @@ export default async function AsignacionRevisorPage({
               </div>
             </div>
 
-            {error && (
+            {listError && (
               <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-900/40 dark:bg-amber-950/40 dark:text-amber-100">
-                {error.message}
+                {listError.message}
               </div>
             )}
 
-            {!error && assignments.length === 0 && (
+            {!listError && assignments.length === 0 && (
               <div className="rounded-lg border border-zinc-200 bg-white p-6 text-sm text-zinc-600 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-400">
                 No hay asignaciones por ahora.
               </div>
             )}
 
-            {!error && assignments.length > 0 && (
+            {!listError && assignments.length > 0 && (
               <div className="grid gap-3">
                 {assignments.map((a) => {
                   const createdLabel = a.created_at

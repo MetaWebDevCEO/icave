@@ -17,7 +17,7 @@ type Props = {
   messageParam?: string;
   assignments: TaskRowWithRevisor[];
   basePath: string;
-  onSubmit: (formData: FormData) => Promise<void | unknown>;
+  onSubmit: (formData: FormData) => any;
   downloadBasePath: string;
   onSaveComment: (formData: FormData) => Promise<void>;
   onDelete: (formData: FormData) => Promise<void>;
