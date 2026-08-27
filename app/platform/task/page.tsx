@@ -191,6 +191,9 @@ export default async function TaskPage({
   const sections = buildSections(role);
   const sp = await searchParams;
   const statusFilter = getSearchParam(sp, "status") ?? "all";
+  const dateFrom = getSearchParam(sp, "date_from");
+  const dateTo = getSearchParam(sp, "date_to");
+  const supervisorFilter = getSearchParam(sp, "supervisor");
   const errorParam = getSearchParam(sp, "error");
   const messageParam = getSearchParam(sp, "message");
 
@@ -316,6 +319,63 @@ export default async function TaskPage({
     (row) => !row.submission_path && !extractEntregaPathFromDescription(row.description)
   );
 
+  type UserOption = { value: string; label: string };
+  let userOptions: UserOption[] = [];
+  {
+    const set = new Map<string, string>();
+
+    for (const r of rows) {
+      const haystacks = [
+        (r as { assigned_to_email?: string | null }).assigned_to_email,
+        (r as { assigned_to?: string | null }).assigned_to,
+      ];
+      for (const h of haystacks) {
+        const email = normalizeEmail(h);
+        if (email && !set.has(email)) set.set(email, email);
+      }
+    }
+
+    if (admin) {
+      const emailByUserId = new Map<string, string>();
+      try {
+        const listed = await admin.auth.admin.listUsers({ page: 1, perPage: 500 });
+        for (const u of listed.data?.users ?? []) {
+          const email = normalizeEmail(u.email);
+          if (email) {
+            if (!set.has(email)) set.set(email, email);
+            if (u.id) emailByUserId.set(u.id, email);
+          }
+        }
+      } catch {
+        // sin acceso admin listUsers: seguimos con emails de asignaciones
+      }
+
+      try {
+        const rolesRes = await admin
+          .from("user_roles")
+          .select("user_id, role_code")
+          .limit(1000);
+        const rowsR = rolesRes.data ?? [];
+        for (const row of rowsR) {
+          const code = String((row as { role_code?: unknown }).role_code ?? "").trim();
+          const isSupervisor =
+            code === "2" || code === "usuario" || code === "supervisor";
+          if (!isSupervisor) continue;
+          const uid = String((row as { user_id?: unknown }).user_id ?? "").trim();
+          if (!uid) continue;
+          const email = emailByUserId.get(uid);
+          if (email && !set.has(email)) set.set(email, email);
+        }
+      } catch {
+        // sin acceso user_roles: seguimos con lo que tenemos
+      }
+    }
+
+    userOptions = Array.from(set.values())
+      .sort((a, b) => a.localeCompare(b))
+      .map((email) => ({ value: email, label: email }));
+  }
+
   if (needsStorageLookup) {
     const storageClient = admin ?? supabase;
     let assignedUserIdByEmail = new Map<string, string>();
@@ -384,11 +444,61 @@ export default async function TaskPage({
   }
 
   const assignments = (data ?? []).filter((row) => {
-    if (statusFilter === "all") return true;
     const status = (row.status ?? "").trim().toLowerCase();
-    if (statusFilter === "pending") return status.includes("pend");
-    if (statusFilter === "progress") return status.includes("prog") || status.includes("curso");
-    if (statusFilter === "completed") return status.includes("comp") || status.includes("done");
+    const passStatus =
+      statusFilter === "all"
+        ? true
+        : statusFilter === "pending"
+          ? status.includes("pend")
+          : statusFilter === "progress"
+            ? status.includes("prog") || status.includes("curso")
+            : statusFilter === "completed"
+              ? status.includes("comp") || status.includes("done")
+              : true;
+
+    if (!passStatus) return false;
+
+    const supervisorNeedle = normalizeEmail(supervisorFilter);
+    if (supervisorNeedle) {
+      const haystacks = [
+        normalizeEmail((row as { assigned_to_email?: string | null }).assigned_to_email),
+        normalizeEmail((row as { assigned_to?: string | null }).assigned_to),
+      ];
+      const match = haystacks.some((h) => h && h.includes(supervisorNeedle));
+      if (!match) return false;
+    }
+
+    const isoFrom = (dateFrom ?? "").trim();
+    const isoTo = (dateTo ?? "").trim();
+    if (isoFrom || isoTo) {
+      const candidates = [
+        row.created_at,
+        (row as { due_at?: string | null }).due_at,
+        (row as { submitted_at?: string | null }).submitted_at,
+      ].filter(Boolean) as string[];
+
+      const t = candidates.map((iso) => new Date(iso).getTime());
+
+      if (t.length === 0) {
+        return false;
+      }
+
+      if (isoFrom) {
+        const d = new Date(isoFrom);
+        if (!Number.isNaN(d.getTime())) {
+          const fromTs = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0).getTime();
+          if (!t.some((x) => x >= fromTs)) return false;
+        }
+      }
+      if (isoTo) {
+        const d = new Date(isoTo);
+        if (!Number.isNaN(d.getTime())) {
+          const toTs = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999).getTime();
+          if (!t.some((x) => x <= toTs)) return false;
+        }
+      }
+    }
+
     return true;
   });
 
@@ -901,6 +1011,10 @@ export default async function TaskPage({
       currentUserEmail={user.email ?? undefined}
       sections={sections}
       statusFilter={statusFilter}
+      dateFrom={dateFrom}
+      dateTo={dateTo}
+      supervisorFilter={supervisorFilter}
+      userOptions={userOptions}
       error={error}
       errorParam={errorParam}
       messageParam={messageParam}

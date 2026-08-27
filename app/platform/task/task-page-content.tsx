@@ -12,6 +12,10 @@ type Props = {
   currentUserEmail?: string;
   sections: SidebarSection[];
   statusFilter: string;
+  dateFrom?: string;
+  dateTo?: string;
+  supervisorFilter?: string;
+  userOptions?: { value: string; label: string }[];
   error: PostgrestError | null;
   errorParam?: string;
   messageParam?: string;
@@ -36,12 +40,25 @@ function filterClass(statusFilter: string, key: string, _value: string) {
   ].join(" ");
 }
 
+function buildQuery(entries: Record<string, string | undefined>) {
+  const params = new URLSearchParams();
+  for (const [k, v] of Object.entries(entries)) {
+    if (v && String(v).trim().length > 0) params.set(k, v);
+  }
+  const q = params.toString();
+  return q ? `?${q}` : "";
+}
+
 export function TaskPageContent({
   role,
   currentUserId,
   currentUserEmail,
   sections,
   statusFilter,
+  dateFrom,
+  dateTo,
+  supervisorFilter,
+  userOptions = [],
   error,
   errorParam,
   messageParam,
@@ -52,10 +69,21 @@ export function TaskPageContent({
   onSaveComment,
   onDelete,
 }: Props) {
-  const link = (status: string) =>
-    status === "all"
-      ? `${basePath}?status=all`
-      : `${basePath}?status=${status}`;
+  const preserve: Record<string, string | undefined> = {
+    status: statusFilter && statusFilter !== "all" ? statusFilter : undefined,
+    date_from: dateFrom,
+    date_to: dateTo,
+    supervisor: supervisorFilter,
+  };
+
+  const linkForStatus = (status: string) => {
+    return `${basePath}${buildQuery({
+      ...preserve,
+      status: status === "all" ? undefined : status,
+    })}`;
+  };
+
+  const clearLink = `${basePath}?status=all`;
 
   return (
     <PlatformShell
@@ -75,19 +103,85 @@ export function TaskPageContent({
           </div>
 
           <div className="flex flex-wrap items-center gap-2 text-sm">
-            <a href={link("all")} className={filterClass(statusFilter, "all", "all")}>
+            <a href={linkForStatus("all")} className={filterClass(statusFilter, "all", "all")}>
               Todas
             </a>
-            <a href={link("pending")} className={filterClass(statusFilter, "pend", "pending")}>
+            <a href={linkForStatus("pending")} className={filterClass(statusFilter, "pend", "pending")}>
               Pendientes
             </a>
-            <a href={link("progress")} className={filterClass(statusFilter, "prog", "progress")}>
+            <a href={linkForStatus("progress")} className={filterClass(statusFilter, "prog", "progress")}>
               En curso
             </a>
-            <a href={link("completed")} className={filterClass(statusFilter, "comp", "completed")}>
+            <a href={linkForStatus("completed")} className={filterClass(statusFilter, "comp", "completed")}>
               Completadas
             </a>
           </div>
+        </div>
+
+        <div className="mt-4 rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
+          <form
+            method="GET"
+            action={basePath}
+            className="grid grid-cols-1 gap-3 md:grid-cols-[1fr_1fr_1.3fr_auto_auto]"
+          >
+            <input type="hidden" name="status" value={statusFilter ?? "all"} />
+
+            <label className="grid gap-1 text-sm">
+              <span className="text-zinc-600 dark:text-zinc-400">Desde</span>
+              <input
+                type="date"
+                name="date_from"
+                defaultValue={dateFrom ?? ""}
+                className="h-10 rounded-md border border-zinc-200 bg-white px-3 text-sm text-zinc-950 outline-none focus:ring-2 focus:ring-zinc-400 dark:border-zinc-800 dark:bg-black dark:text-zinc-50"
+              />
+            </label>
+
+            <label className="grid gap-1 text-sm">
+              <span className="text-zinc-600 dark:text-zinc-400">Hasta</span>
+              <input
+                type="date"
+                name="date_to"
+                defaultValue={dateTo ?? ""}
+                className="h-10 rounded-md border border-zinc-200 bg-white px-3 text-sm text-zinc-950 outline-none focus:ring-2 focus:ring-zinc-400 dark:border-zinc-800 dark:bg-black dark:text-zinc-50"
+              />
+            </label>
+
+            <label className="grid gap-1 text-sm">
+              <span className="text-zinc-600 dark:text-zinc-400">
+                Supervisor
+              </span>
+              <select
+                name="supervisor"
+                defaultValue={supervisorFilter ?? ""}
+                className="h-10 rounded-md border border-zinc-200 bg-white px-3 text-sm text-zinc-950 outline-none focus:ring-2 focus:ring-zinc-400 dark:border-zinc-800 dark:bg-black dark:text-zinc-50"
+              >
+                <option value="">Todos los usuarios</option>
+                {userOptions.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <div className="flex items-end">
+              <button
+                type="submit"
+                className="h-10 w-full rounded-md bg-zinc-900 px-4 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
+              >
+                Filtrar
+              </button>
+            </div>
+
+            <div className="flex items-end">
+              <a
+                href={clearLink}
+                className="inline-flex h-10 w-full items-center justify-center rounded-md border border-zinc-200 bg-white px-4 text-sm font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-800 dark:bg-black dark:text-zinc-300 dark:hover:bg-zinc-900"
+              >
+                Limpiar
+              </a>
+            </div>
+          </form>
         </div>
 
         {(errorParam || messageParam) && (
