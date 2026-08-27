@@ -17,8 +17,8 @@ type Props = {
   messageParam?: string;
   assignments: TaskRowWithRevisor[];
   basePath: string;
-  onSubmit: (formData: FormData) => Promise<void>;
-  onDownload: (formData: FormData) => Promise<void>;
+  onSubmit: (formData: FormData) => Promise<void | unknown>;
+  downloadBasePath: string;
   onSaveComment: (formData: FormData) => Promise<void>;
   onDelete: (formData: FormData) => Promise<void>;
 };
@@ -48,7 +48,7 @@ export function TaskPageContent({
   assignments,
   basePath,
   onSubmit,
-  onDownload,
+  downloadBasePath,
   onSaveComment,
   onDelete,
 }: Props) {
@@ -132,7 +132,7 @@ export function TaskPageContent({
             currentUserId={currentUserId}
             tasks={assignments}
             onSubmit={onSubmit}
-            onDownload={onDownload}
+            downloadBasePath={downloadBasePath}
             onSaveComment={onSaveComment}
             onDelete={onDelete}
           />

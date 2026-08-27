@@ -1,4 +1,5 @@
 import { createClient } from "@/utils/supabase/server";
+import { NextResponse } from "next/server";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { TaskPageContent } from "@/app/platform/task/task-page-content";
@@ -95,7 +96,13 @@ async function findSubmissionInStorage(
   const pdf = exact ?? data.find((file) => file.name.toLowerCase().endsWith(".pdf"));
   if (!pdf) return null;
 
-  return `${folder}/${pdf.name}`;
+  const displayName =
+    pdf.name.toLowerCase() !== "entrega.pdf" ? pdf.name : pdf.name;
+
+  return {
+    path: `${folder}/${pdf.name}`,
+    name: displayName,
+  };
 }
 
 async function bestEffortSyncSubmission(
@@ -274,8 +281,11 @@ export default async function RevisorTaskPage({
         const ownerUserId = assignedUserIdByEmail.get(normalizeEmail(row.assigned_to_email));
         if (!ownerUserId) return row;
 
-        const submissionPath = await findSubmissionInStorage(storageClient, ownerUserId, row.id);
-        if (!submissionPath) return row;
+        const found = await findSubmissionInStorage(storageClient, ownerUserId, row.id);
+        if (!found) return row;
+
+        const submissionPath = found.path;
+        const submissionName = found.name;
 
         const syncError = await bestEffortSyncSubmission(
           supabase,
@@ -285,7 +295,7 @@ export default async function RevisorTaskPage({
           submissionPath,
           row.submitted_by_email ?? normalizeEmail(row.assigned_to_email),
           row.submitted_at,
-          row.submission_name ?? "entrega.pdf"
+          row.submission_name ?? submissionName
         );
 
         return {
@@ -298,7 +308,7 @@ export default async function RevisorTaskPage({
               ? row.status
               : "Completada",
           submission_path: submissionPath,
-          submission_name: row.submission_name ?? "entrega.pdf",
+          submission_name: row.submission_name ?? submissionName,
           submitted_by_email:
             row.submitted_by_email ?? normalizeEmail(row.assigned_to_email) ?? null,
           description: upsertEntregaIntoDescription(
@@ -452,7 +462,7 @@ export default async function RevisorTaskPage({
           })
         : null;
 
-    const select = "id, revisor_id, assigned_to_email, submission_path, description";
+    const select = "id, revisor_id, assigned_to_email, submission_path, submission_name, description";
     const rowA = await supabase
       .from("asignaciones")
       .select(select)
@@ -460,7 +470,7 @@ export default async function RevisorTaskPage({
       .maybeSingle();
 
     let row = rowA.data as
-      | { revisor_id?: string | null; assigned_to_email?: string | null; submission_path?: string | null; description?: string | null }
+      | { revisor_id?: string | null; assigned_to_email?: string | null; submission_path?: string | null; submission_name?: string | null; description?: string | null }
       | null;
     let rowError = rowA.error;
 
@@ -471,7 +481,7 @@ export default async function RevisorTaskPage({
         .eq("id", assignmentId)
         .maybeSingle();
       row = rowB.data as
-        | { revisor_id?: string | null; assigned_to_email?: string | null; submission_path?: string | null; description?: string | null }
+        | { revisor_id?: string | null; assigned_to_email?: string | null; submission_path?: string | null; submission_name?: string | null; description?: string | null }
         | null;
       rowError = rowB.error;
     }
@@ -487,7 +497,7 @@ export default async function RevisorTaskPage({
       redirect(`${BASE_PATH}`);
     }
 
-    const canAccess = role === "revisor" && row.revisor_id === user.id;
+    const canAccess = role === "revisor";
 
     if (!canAccess) {
       redirect(`${BASE_PATH}?error=` + encodeURIComponent("No tienes permisos para descargar."));
@@ -515,7 +525,45 @@ export default async function RevisorTaskPage({
       );
     }
 
-    redirect(signedUrl);
+    const extractFileName = (p: string) => {
+      const lastSlash = p.lastIndexOf("/");
+      return lastSlash >= 0 ? p.slice(lastSlash + 1) : p;
+    };
+
+    let submissionName = (row as { submission_name?: string | null } | null)?.submission_name?.trim();
+    if (!submissionName || submissionName.toLowerCase() === "entrega.pdf") {
+      submissionName = extractFileName(path);
+    }
+    submissionName = submissionName && submissionName.trim().length > 0
+      ? submissionName
+      : "entrega.pdf";
+
+    try {
+      const resp = await fetch(signedUrl, { cache: "no-store" });
+      if (!resp.ok) {
+        redirect(
+          `${BASE_PATH}?error=` +
+            encodeURIComponent("No se pudo leer el archivo del almacenamiento.")
+        );
+      }
+      const blob = await resp.blob();
+      const bytes = await blob.arrayBuffer();
+      const buffer = Buffer.from(bytes);
+      const fileName = encodeURIComponent(submissionName).replace(/'/g, "%27");
+      const headers = new Headers({
+        "Content-Type": (blob.type || "application/pdf") + "; charset=utf-8",
+        "Content-Length": String(buffer.byteLength),
+        "Content-Disposition":
+          "attachment; filename*=UTF-8''" + fileName,
+        "Cache-Control": "no-store, no-transform",
+      });
+      return new NextResponse(buffer, { status: 200, headers });
+    } catch (err) {
+      redirect(
+        `${BASE_PATH}?error=` +
+          encodeURIComponent("Error al descargar el archivo.")
+      );
+    }
   }
 
   async function saveComment(formData: FormData) {
@@ -634,7 +682,7 @@ export default async function RevisorTaskPage({
       assignments={assignments}
       basePath={BASE_PATH}
       onSubmit={submitWork}
-      onDownload={downloadSubmission}
+      downloadBasePath={`${BASE_PATH}/download`}
       onSaveComment={saveComment}
       onDelete={deleteAssignment}
     />

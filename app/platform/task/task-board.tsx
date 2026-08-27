@@ -103,20 +103,54 @@ function getVisibleDescription(description: string | null | undefined) {
   return cleaned || null;
 }
 
+function extractFileNameFromPath(path: string | null | undefined) {
+  if (!path) return null;
+  const lastSlash = path.lastIndexOf("/");
+  const name = lastSlash >= 0 ? path.slice(lastSlash + 1) : path;
+  return name || null;
+}
+
+function getSubmissionDisplayName(
+  submissionName: string | null | undefined,
+  submissionPath: string | null | undefined,
+  fallbackDescription: string | null | undefined
+) {
+  if (submissionName && submissionName.trim().length > 0) {
+    return submissionName;
+  }
+  const fromPath = extractFileNameFromPath(submissionPath);
+  if (fromPath) {
+    return fromPath;
+  }
+  const meta = extractEntregaMeta(fallbackDescription);
+  const fromMetaPath = extractFileNameFromPath(meta.path);
+  return fromMetaPath ?? "Documento.pdf";
+}
+
+function hasDeliveryEvidence(t: TaskRow) {
+  return Boolean(
+    t.submission_path ||
+      extractEntregaPathFromDescription(t.description) ||
+      t.submission_name ||
+      t.submitted_at ||
+      t.submitted_by_email
+  );
+}
+
 export function TaskBoard({
   role,
   currentUserId,
   tasks,
   onSubmit,
-  onDownload,
+  downloadBasePath,
   onSaveComment,
   onDelete,
 }: {
   role: UserRole;
   currentUserId: string;
   tasks: TaskRow[];
-  onSubmit: (formData: FormData) => Promise<void>;
-  onDownload: (formData: FormData) => Promise<void>;
+  onSubmit: (formData: FormData) => Promise<void | unknown>;
+  downloadBasePath: string;
   onSaveComment: (formData: FormData) => Promise<void>;
   onDelete: (formData: FormData) => Promise<void>;
 }) {
@@ -129,9 +163,15 @@ export function TaskBoard({
 
   const deliveryMeta = extractEntregaMeta(selected?.description);
   const deliveryPath = selected?.submission_path ?? deliveryMeta.path;
+  const selectedHasDelivery = selected ? hasDeliveryEvidence(selected) : false;
   const visibleDescription = getVisibleDescription(selected?.description);
   const submittedAtLabel = selected?.submitted_at ?? deliveryMeta.submittedAt;
   const submittedByLabel = selected?.submitted_by_email ?? deliveryMeta.submittedBy;
+  const deliveryFileName = getSubmissionDisplayName(
+    selected?.submission_name,
+    selected?.submission_path,
+    selected?.description
+  );
 
   const isCompleted = (status: string | null | undefined) => {
     const normalized = (status ?? "").trim().toLowerCase();
@@ -199,11 +239,22 @@ export function TaskBoard({
                       {formatShortDate(t.due_at)}
                     </span>
                   </div>
-                  {(t.submission_path ?? extractEntregaPathFromDescription(t.description)) && (
+                  {hasDeliveryEvidence(t) && (
                     <div className="flex items-center justify-between gap-3">
-                      <span>Entrega</span>
-                      <span className="font-medium text-emerald-700 dark:text-emerald-300">
-                        Registrada
+                      <span>Archivo</span>
+                      <span
+                        className="max-w-[60%] truncate font-medium text-emerald-700 dark:text-emerald-300"
+                        title={getSubmissionDisplayName(
+                          t.submission_name,
+                          t.submission_path,
+                          t.description
+                        )}
+                      >
+                        {getSubmissionDisplayName(
+                          t.submission_name,
+                          t.submission_path,
+                          t.description
+                        )}
                       </span>
                     </div>
                   )}
@@ -315,68 +366,55 @@ export function TaskBoard({
                     Estado de tu entrega
                   </div>
                   <div className="mt-2 text-sm text-zinc-700 dark:text-zinc-300">
-                    {deliveryPath
-                      ? "Tu PDF ya esta guardado y el revisor puede revisarlo."
-                      : "Aun no has subido una entrega para esta tarea."}
+                    {selectedHasDelivery
+                      ? "Tu PDF ya está guardado y el revisor puede revisarlo."
+                      : "Aún no has subido una entrega para esta tarea."}
                   </div>
                 </div>
               )}
 
-              {deliveryPath && (
+              {selectedHasDelivery && (
                 <div className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-black">
-                  <div className="text-sm font-medium text-zinc-950 dark:text-zinc-50">
-                    Entrega
-                  </div>
-                  <div className="mt-2 grid gap-2 text-sm text-zinc-700 dark:text-zinc-300">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <span className="text-zinc-600 dark:text-zinc-400">Archivo</span>
-                      <span className="font-medium">
-                        {selected.submission_name ?? "PDF"}
-                      </span>
+                  <div className="flex items-start gap-3">
+                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-200 dark:bg-emerald-950/30 dark:text-emerald-300 dark:ring-emerald-900">
+                      <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" className="h-5 w-5">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                        <path d="M14 2v6h6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                        <path d="M9 15h6M9 18h4" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                      </svg>
                     </div>
+                    <div className="min-w-0 flex-1">
+                      <div
+                        className="truncate text-sm font-semibold text-zinc-950 dark:text-zinc-50"
+                        title={deliveryFileName}
+                      >
+                        {deliveryFileName}
+                      </div>
+                      <div className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                        {submittedByLabel ? `Enviado por ${submittedByLabel}` : "Documento PDF"}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="mt-3 grid gap-2 text-sm text-zinc-700 dark:text-zinc-300">
                     <div className="flex flex-wrap items-center justify-between gap-2">
-                      <span className="text-zinc-600 dark:text-zinc-400">Enviado</span>
+                      <span className="text-zinc-600 dark:text-zinc-400">Fecha de entrega</span>
                       <span className="font-medium">
                         {formatShortDate(submittedAtLabel)}
                       </span>
                     </div>
-                    {submittedByLabel && (
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <span className="text-zinc-600 dark:text-zinc-400">Por</span>
-                        <span className="font-medium">{submittedByLabel}</span>
-                      </div>
-                    )}
-                    <form action={onDownload}>
-                      <input
-                        type="hidden"
-                        name="assignment_id"
-                        value={selected.id}
-                      />
-                      <button
-                        type="submit"
-                        className="mt-1 inline-flex h-10 w-full items-center justify-center rounded-md border border-zinc-200 bg-white px-4 text-sm font-medium text-zinc-900 hover:bg-zinc-100 dark:border-zinc-800 dark:bg-black dark:text-zinc-100 dark:hover:bg-zinc-900"
-                      >
-                        Descargar PDF
-                      </button>
-                    </form>
-
-                    {role === "revisor" && (
-                      <div className="mt-2 grid gap-2">
-                        <form action={onDownload}>
-                          <input
-                            type="hidden"
-                            name="assignment_id"
-                            value={selected.id}
-                          />
-                          <button
-                            type="submit"
-                            className="inline-flex h-10 w-full items-center justify-center rounded-md bg-zinc-900 px-4 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
-                          >
-                            Ver PDF
-                          </button>
-                        </form>
-                      </div>
-                    )}
+                    <a
+                      href={`${downloadBasePath}?assignment_id=${encodeURIComponent(selected.id)}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="mt-1 inline-flex h-10 w-full items-center justify-center gap-2 rounded-md bg-zinc-900 px-4 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" className="h-4 w-4">
+                        <path d="M12 3v12" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                        <path d="m7 10 5 5 5-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                        <path d="M5 21h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                      </svg>
+                      Ver PDF
+                    </a>
                   </div>
                 </div>
               )}
@@ -414,14 +452,14 @@ export function TaskBoard({
               {role === "usuario" && (
                 <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-4 dark:border-zinc-800 dark:bg-zinc-900/30">
                   <div className="text-sm font-medium text-zinc-950 dark:text-zinc-50">
-                    {deliveryPath ? "Modificar entrega (PDF)" : "Subir archivo (PDF)"}
+                    {selectedHasDelivery ? "Modificar entrega (PDF)" : "Subir archivo (PDF)"}
                   </div>
-                  {deliveryPath && (
+                  {selectedHasDelivery && (
                     <div className="mt-2 text-sm text-zinc-700 dark:text-zinc-300">
-                      La entrega actual sigue guardada. Si subes otro PDF, se reemplaza por la nueva version.
+                      La entrega actual sigue guardada. Si subes otro PDF, se reemplaza por la nueva versión.
                     </div>
                   )}
-                  <form action={onSubmit} className="mt-3 grid gap-3">
+                  <form action={onSubmit} method="POST" encType="multipart/form-data" className="mt-3 grid gap-3">
                     <input type="hidden" name="assignment_id" value={selected.id} />
                     <input
                       name="file"
@@ -434,7 +472,7 @@ export function TaskBoard({
                       type="submit"
                       className="inline-flex h-10 items-center justify-center rounded-md bg-zinc-900 px-4 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
                     >
-                      {deliveryPath || isCompleted(selected.status)
+                      {selectedHasDelivery || isCompleted(selected.status)
                         ? "Actualizar entrega"
                         : "Enviar entrega"}
                     </button>

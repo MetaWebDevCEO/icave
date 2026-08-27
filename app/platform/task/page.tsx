@@ -1,4 +1,5 @@
 import { createClient } from "@/utils/supabase/server";
+import { NextResponse } from "next/server";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import type { TaskRow } from "@/app/platform/task/task-board";
@@ -97,7 +98,13 @@ async function findSubmissionInStorage(
   const pdf = exact ?? data.find((file) => file.name.toLowerCase().endsWith(".pdf"));
   if (!pdf) return null;
 
-  return `${folder}/${pdf.name}`;
+  const displayName =
+    pdf.name.toLowerCase() !== "entrega.pdf" ? pdf.name : pdf.name;
+
+  return {
+    path: `${folder}/${pdf.name}`,
+    name: displayName,
+  };
 }
 
 async function bestEffortSyncSubmission(
@@ -335,8 +342,11 @@ export default async function TaskPage({
 
         if (!ownerUserId) return row;
 
-        const submissionPath = await findSubmissionInStorage(storageClient, ownerUserId, row.id);
-        if (!submissionPath) return row;
+        const found = await findSubmissionInStorage(storageClient, ownerUserId, row.id);
+        if (!found) return row;
+
+        const submissionPath = found.path;
+        const submissionName = found.name;
 
         const syncError = await bestEffortSyncSubmission(
           supabase,
@@ -346,7 +356,7 @@ export default async function TaskPage({
           submissionPath,
           row.submitted_by_email ?? normalizeEmail(row.assigned_to_email),
           row.submitted_at,
-          row.submission_name ?? "entrega.pdf"
+          row.submission_name ?? submissionName
         );
 
         return {
@@ -359,7 +369,7 @@ export default async function TaskPage({
               ? row.status
               : "Completada",
           submission_path: submissionPath,
-          submission_name: row.submission_name ?? "entrega.pdf",
+          submission_name: row.submission_name ?? submissionName,
           submitted_by_email:
             row.submitted_by_email ?? normalizeEmail(row.assigned_to_email) ?? null,
           description: upsertEntregaIntoDescription(
@@ -576,9 +586,35 @@ export default async function TaskPage({
     }
 
     const safeName = sanitizeFileName(name) || "archivo.pdf";
-    const objectPath = `entregas/${user.id}/${assignmentId}/entrega.pdf`;
+    const folderPath = `entregas/${user.id}/${assignmentId}`;
+    const objectPath = `${folderPath}/${safeName}`;
 
     const fileToUpload = new File([bytes], safeName, { type: "application/pdf" });
+
+    const cleanupFolder = async (client: SupabaseClient) => {
+      try {
+        const listed = await client.storage.from("asignaciones").list(folderPath, {
+          limit: 50,
+          offset: 0,
+        });
+        if (listed.data && listed.data.length > 0) {
+          const pdfsToRemove = listed.data
+            .filter((f) => f.name.toLowerCase().endsWith(".pdf"))
+            .map((f) => `${folderPath}/${f.name}`);
+          if (pdfsToRemove.length > 0) {
+            await client.storage.from("asignaciones").remove(pdfsToRemove).catch(() => null);
+          }
+        }
+      } catch {
+        /* ignore cleanup errors */
+      }
+    };
+
+    if (admin) {
+      await cleanupFolder(admin);
+    } else {
+      await cleanupFolder(supabase);
+    }
 
     const uploadA = await supabase.storage.from("asignaciones").upload(objectPath, fileToUpload, {
       contentType: "application/pdf",
@@ -647,7 +683,7 @@ export default async function TaskPage({
           })
         : null;
 
-    const select = "id, revisor_id, assigned_to_email, submission_path, description";
+    const select = "id, revisor_id, assigned_to_email, submission_path, submission_name, description";
     const rowA = await supabase
       .from("asignaciones")
       .select(select)
@@ -655,7 +691,7 @@ export default async function TaskPage({
       .maybeSingle();
 
     let row = rowA.data as
-      | { revisor_id?: string | null; assigned_to_email?: string | null; submission_path?: string | null; description?: string | null }
+      | { revisor_id?: string | null; assigned_to_email?: string | null; submission_path?: string | null; submission_name?: string | null; description?: string | null }
       | null;
     let rowError = rowA.error;
 
@@ -666,7 +702,7 @@ export default async function TaskPage({
         .eq("id", assignmentId)
         .maybeSingle();
       row = rowB.data as
-        | { revisor_id?: string | null; assigned_to_email?: string | null; submission_path?: string | null; description?: string | null }
+        | { revisor_id?: string | null; assigned_to_email?: string | null; submission_path?: string | null; submission_name?: string | null; description?: string | null }
         | null;
       rowError = rowB.error;
     }
@@ -686,7 +722,7 @@ export default async function TaskPage({
     const assignedTo = normalizeEmail(row.assigned_to_email);
     const canAccess =
       (role === "usuario" && userEmail && assignedTo && userEmail === assignedTo) ||
-      (role === "revisor" && row.revisor_id === user.id);
+      role === "revisor";
 
     if (!canAccess) {
       redirect("/platform/task?error=" + encodeURIComponent("No tienes permisos para descargar."));
@@ -714,7 +750,45 @@ export default async function TaskPage({
       );
     }
 
-    redirect(signedUrl);
+    const extractFileName = (p: string) => {
+      const lastSlash = p.lastIndexOf("/");
+      return lastSlash >= 0 ? p.slice(lastSlash + 1) : p;
+    };
+
+    let submissionName = (row as { submission_name?: string | null } | null)?.submission_name?.trim();
+    if (!submissionName || submissionName.toLowerCase() === "entrega.pdf") {
+      submissionName = extractFileName(path);
+    }
+    submissionName = submissionName && submissionName.trim().length > 0
+      ? submissionName
+      : "entrega.pdf";
+
+    try {
+      const resp = await fetch(signedUrl, { cache: "no-store" });
+      if (!resp.ok) {
+        redirect(
+          "/platform/task?error=" +
+            encodeURIComponent("No se pudo leer el archivo del almacenamiento.")
+        );
+      }
+      const blob = await resp.blob();
+      const bytes = await blob.arrayBuffer();
+      const buffer = Buffer.from(bytes);
+      const fileName = encodeURIComponent(submissionName).replace(/'/g, "%27");
+      const headers = new Headers({
+        "Content-Type": (blob.type || "application/pdf") + "; charset=utf-8",
+        "Content-Length": String(buffer.byteLength),
+        "Content-Disposition":
+          "attachment; filename*=UTF-8''" + fileName,
+        "Cache-Control": "no-store, no-transform",
+      });
+      return new NextResponse(buffer, { status: 200, headers });
+    } catch (err) {
+      redirect(
+        "/platform/task?error=" +
+          encodeURIComponent("Error al descargar el archivo.")
+      );
+    }
   }
 
   async function saveComment(formData: FormData) {
@@ -833,7 +907,7 @@ export default async function TaskPage({
       assignments={assignments}
       basePath="/platform/task"
       onSubmit={submitWork}
-      onDownload={downloadSubmission}
+      downloadBasePath="/platform/task/download"
       onSaveComment={saveComment}
       onDelete={deleteAssignment}
     />
