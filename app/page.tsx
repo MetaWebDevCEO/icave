@@ -252,9 +252,12 @@ export default async function Home({
                         />
                         <span>Recordarme</span>
                       </label>
-                      <span className="text-sm font-medium text-[#3b3936]">
+                      <Link
+                        href="/auth/forgot-password"
+                        className="text-sm font-medium text-[#3b3936] transition-colors hover:text-[#111111]"
+                      >
                         Olvide mi contraseña
-                      </span>
+                      </Link>
                     </div>
                     <button
                       type="submit"

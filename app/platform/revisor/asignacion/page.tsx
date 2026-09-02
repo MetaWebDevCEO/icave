@@ -116,6 +116,8 @@ function statusBadgeClasses(status: string | null | undefined) {
   return "bg-zinc-100 text-zinc-700 dark:bg-zinc-900 dark:text-zinc-300";
 }
 
+const MAX_ATTACHMENT_SIZE_BYTES = 10_000 * 1024;
+
 export default async function AsignacionRevisorPage({
   searchParams,
 }: {
@@ -371,6 +373,13 @@ export default async function AsignacionRevisorPage({
         redirect(
           "/platform/revisor/asignacion?error=" +
             encodeURIComponent("Solo se permiten archivos PDF.")
+        );
+      }
+
+      if (attachment.size > MAX_ATTACHMENT_SIZE_BYTES) {
+        redirect(
+          "/platform/revisor/asignacion?error=" +
+            encodeURIComponent("El adjunto no puede superar los 10,000 KB (10 MB).")
         );
       }
 
@@ -768,7 +777,7 @@ export default async function AsignacionRevisorPage({
                   className="block w-full text-sm text-zinc-700 file:mr-4 file:rounded-md file:border file:border-zinc-200 file:bg-white file:px-3 file:py-2 file:text-sm file:font-medium file:text-zinc-900 hover:file:bg-zinc-100 dark:text-zinc-300 dark:file:border-zinc-800 dark:file:bg-black dark:file:text-zinc-100 dark:hover:file:bg-zinc-900"
                 />
                 <div className="text-xs text-zinc-500 dark:text-zinc-400">
-                  Tipo permitido: PDF.
+                  Tipo permitido: PDF. Tamaño máximo: 10,000 KB (10 MB).
                 </div>
               </label>
 

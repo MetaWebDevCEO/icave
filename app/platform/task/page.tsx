@@ -49,6 +49,8 @@ function isSchemaMismatch(err: PostgrestError | null) {
   );
 }
 
+const MAX_SUBMISSION_SIZE_BYTES = 10_000 * 1024;
+
 function extractEntregaPathFromDescription(description: string | null | undefined) {
   if (!description) return null;
   const match = /^\s*entrega:\s*(\S+)\s*$/im.exec(description);
@@ -632,6 +634,13 @@ export default async function TaskPage({
     const lower = name.toLowerCase();
     if (!lower.endsWith(".pdf")) {
       redirect("/platform/task?error=" + encodeURIComponent("Solo se permiten archivos PDF."));
+    }
+
+    if (file.size > MAX_SUBMISSION_SIZE_BYTES) {
+      redirect(
+        "/platform/task?error=" +
+          encodeURIComponent("El archivo no puede superar los 10,000 KB (10 MB).")
+      );
     }
 
     const bytes = new Uint8Array(await file.arrayBuffer());

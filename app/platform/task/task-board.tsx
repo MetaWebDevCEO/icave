@@ -3,6 +3,8 @@
 import { useMemo, useState } from "react";
 import { formatCalendarDateShort, parseAsCalendarDate } from "@/lib/calendar-date";
 
+const MAX_SUBMISSION_SIZE_BYTES = 10_000 * 1024;
+
 type UserRole = "revisor" | "usuario";
 
 export type TaskRow = {
@@ -155,6 +157,7 @@ export function TaskBoard({
   onDelete: (formData: FormData) => Promise<void>;
 }) {
   const [openId, setOpenId] = useState<string | null>(null);
+  const [submissionSizeError, setSubmissionSizeError] = useState<string | null>(null);
 
   const selected = useMemo(() => {
     if (!openId) return null;
@@ -179,6 +182,7 @@ export function TaskBoard({
   };
 
   const resetModalState = () => {
+    setSubmissionSizeError(null);
   };
 
   return (
@@ -461,16 +465,40 @@ export function TaskBoard({
                   )}
                   <form action={onSubmit} method="POST" encType="multipart/form-data" className="mt-3 grid gap-3">
                     <input type="hidden" name="assignment_id" value={selected.id} />
-                    <input
-                      name="file"
-                      type="file"
-                      accept="application/pdf,.pdf"
-                      required
-                      className="block w-full text-sm text-zinc-700 file:mr-4 file:rounded-md file:border file:border-zinc-200 file:bg-white file:px-3 file:py-2 file:text-sm file:font-medium file:text-zinc-900 hover:file:bg-zinc-100 dark:text-zinc-300 dark:file:border-zinc-800 dark:file:bg-black dark:file:text-zinc-100 dark:hover:file:bg-zinc-900"
-                    />
+                    <div className="grid gap-2">
+                      <input
+                        name="file"
+                        type="file"
+                        accept="application/pdf,.pdf"
+                        required
+                        onChange={(e) => {
+                          const f = e.target.files?.[0];
+                          if (f && f.size > MAX_SUBMISSION_SIZE_BYTES) {
+                            setSubmissionSizeError(
+                              "El archivo no puede superar los 10,000 KB (10 MB). Selecciona un PDF más ligero."
+                            );
+                          } else {
+                            setSubmissionSizeError(null);
+                          }
+                        }}
+                        className="block w-full text-sm text-zinc-700 file:mr-4 file:rounded-md file:border file:border-zinc-200 file:bg-white file:px-3 file:py-2 file:text-sm file:font-medium file:text-zinc-900 hover:file:bg-zinc-100 dark:text-zinc-300 dark:file:border-zinc-800 dark:file:bg-black dark:file:text-zinc-100 dark:hover:file:bg-zinc-900"
+                      />
+                      <div className="text-xs text-zinc-500 dark:text-zinc-400">
+                        Tamaño máximo permitido: 10,000 KB (10 MB). Formato: PDF.
+                      </div>
+                      {submissionSizeError && (
+                        <div className="text-xs font-medium text-red-700 dark:text-red-300">
+                          {submissionSizeError}
+                        </div>
+                      )}
+                    </div>
                     <button
                       type="submit"
-                      className="inline-flex h-10 items-center justify-center rounded-md bg-zinc-900 px-4 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
+                      disabled={Boolean(submissionSizeError)}
+                      className={[
+                        "inline-flex h-10 items-center justify-center rounded-md bg-zinc-900 px-4 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200",
+                        submissionSizeError ? "cursor-not-allowed opacity-50 hover:bg-zinc-900 dark:hover:bg-zinc-50" : "",
+                      ].join(" ")}
                     >
                       {selectedHasDelivery || isCompleted(selected.status)
                         ? "Actualizar entrega"
