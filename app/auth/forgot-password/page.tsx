@@ -61,7 +61,7 @@ export default async function ForgotPasswordPage({
     const options: { redirectTo?: string } = {};
 
     if (baseUrl) {
-      options.redirectTo = `${baseUrl}/auth/reset-password`;
+      options.redirectTo = `${baseUrl}/auth/callback?next=/auth/reset-password`;
     }
 
     const supabase = await createClient();
