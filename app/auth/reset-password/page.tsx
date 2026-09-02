@@ -2,6 +2,8 @@ import { createClient } from "@/utils/supabase/server";
 import Image from "next/image";
 import Link from "next/link";
 import { redirect } from "next/navigation";
+import { Suspense } from "react";
+import AuthTokenHandler from "./auth-token-handler";
 
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 
@@ -163,47 +165,63 @@ export default async function ResetPasswordPage({
                 )}
 
                 {isSupabaseConfigured ? (
-                  <form action={updatePassword} className="mt-8 grid gap-4">
-                    <label className="grid gap-2.5 text-sm">
-                      <span className="font-medium text-[#2b2926]">Nueva contraseña</span>
-                      <input
-                        name="password"
-                        type="password"
-                        required
-                        autoFocus
-                        minLength={6}
-                        className="h-12 rounded-xl bg-[#f3f3f1] px-4 text-[#171717] outline-none transition-colors placeholder:text-[#9b958d] focus:bg-white focus:ring-2 focus:ring-[#111111]/6"
-                        placeholder="Mínimo 6 caracteres"
-                      />
-                    </label>
-                    <label className="grid gap-2.5 text-sm">
-                      <span className="font-medium text-[#2b2926]">Confirmar contraseña</span>
-                      <input
-                        name="confirmPassword"
-                        type="password"
-                        required
-                        minLength={6}
-                        className="h-12 rounded-xl bg-[#f3f3f1] px-4 text-[#171717] outline-none transition-colors placeholder:text-[#9b958d] focus:bg-white focus:ring-2 focus:ring-[#111111]/6"
-                        placeholder="Repite la nueva contraseña"
-                      />
-                    </label>
-
-                    <button
-                      type="submit"
-                      className="mt-1 inline-flex h-12 w-full items-center justify-center rounded-xl bg-[#111111] px-4 text-sm font-medium text-white transition-colors hover:bg-[#1d1d1d] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#111111]/30"
+                  <Suspense
+                    fallback={
+                      <div className="mt-8 rounded-[1.35rem] bg-[#f7f7f5] px-5 py-6 text-center text-sm text-[#6f6a63]">
+                        Verificando enlace de recuperación...
+                      </div>
+                    }
+                  >
+                    <AuthTokenHandler
+                      fallback={
+                        <div className="mt-8 rounded-[1.35rem] bg-[#f7f7f5] px-5 py-6 text-center text-sm text-[#6f6a63]">
+                          Preparando formulario...
+                        </div>
+                      }
                     >
-                      Actualizar contraseña
-                    </button>
+                      <form action={updatePassword} className="mt-8 grid gap-4">
+                        <label className="grid gap-2.5 text-sm">
+                          <span className="font-medium text-[#2b2926]">Nueva contraseña</span>
+                          <input
+                            name="password"
+                            type="password"
+                            required
+                            autoFocus
+                            minLength={6}
+                            className="h-12 rounded-xl bg-[#f3f3f1] px-4 text-[#171717] outline-none transition-colors placeholder:text-[#9b958d] focus:bg-white focus:ring-2 focus:ring-[#111111]/6"
+                            placeholder="Mínimo 6 caracteres"
+                          />
+                        </label>
+                        <label className="grid gap-2.5 text-sm">
+                          <span className="font-medium text-[#2b2926]">Confirmar contraseña</span>
+                          <input
+                            name="confirmPassword"
+                            type="password"
+                            required
+                            minLength={6}
+                            className="h-12 rounded-xl bg-[#f3f3f1] px-4 text-[#171717] outline-none transition-colors placeholder:text-[#9b958d] focus:bg-white focus:ring-2 focus:ring-[#111111]/6"
+                            placeholder="Repite la nueva contraseña"
+                          />
+                        </label>
 
-                    <div className="pt-6 text-center">
-                      <Link
-                        href="/"
-                        className="inline-flex items-center text-sm font-medium text-[#3b3936] transition-colors hover:text-[#111111]"
-                      >
-                        ← Volver al inicio de sesión
-                      </Link>
-                    </div>
-                  </form>
+                        <button
+                          type="submit"
+                          className="mt-1 inline-flex h-12 w-full items-center justify-center rounded-xl bg-[#111111] px-4 text-sm font-medium text-white transition-colors hover:bg-[#1d1d1d] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#111111]/30"
+                        >
+                          Actualizar contraseña
+                        </button>
+
+                        <div className="pt-6 text-center">
+                          <Link
+                            href="/"
+                            className="inline-flex items-center text-sm font-medium text-[#3b3936] transition-colors hover:text-[#111111]"
+                          >
+                            ← Volver al inicio de sesión
+                          </Link>
+                        </div>
+                      </form>
+                    </AuthTokenHandler>
+                  </Suspense>
                 ) : null}
               </div>
             </div>
