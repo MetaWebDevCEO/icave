@@ -3,7 +3,7 @@ import { Resend } from "resend";
 const apiKey = process.env.RESEND_API_KEY;
 const defaultFrom = process.env.RESEND_FROM_EMAIL ?? "Promas iCave <soporte@promasicave.com>";
 const defaultFromName = process.env.RESEND_FROM_NAME ?? "Promas iCave";
-const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
+const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "https://promasicave.com";
 
 export const resend = apiKey ? new Resend(apiKey) : null;
 
