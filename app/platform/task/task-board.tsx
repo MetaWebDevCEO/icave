@@ -2,8 +2,15 @@
 
 import { useMemo, useState } from "react";
 import { formatCalendarDateShort, parseAsCalendarDate } from "@/lib/calendar-date";
+import {
+  maxEvidenceFiles,
+  maxSubmissionSizeBytes,
+  parseSubmissionFiles,
+  type SubmissionFile,
+} from "@/lib/submission-files";
 
-const MAX_SUBMISSION_SIZE_BYTES = 10_000 * 1024;
+const MAX_SUBMISSION_SIZE_BYTES = maxSubmissionSizeBytes();
+const MAX_EVIDENCE_FILES = maxEvidenceFiles();
 
 type UserRole = "revisor" | "usuario";
 
@@ -19,6 +26,8 @@ export type TaskRow = {
   revisor_id?: string | null;
   submission_name?: string | null;
   submission_path?: string | null;
+  submission_mime?: string | null;
+  submission_files?: unknown;
   submitted_at?: string | null;
   submitted_by_email?: string | null;
 };
@@ -96,7 +105,10 @@ function getVisibleDescription(description: string | null | undefined) {
       return (
         !normalized.startsWith("entrega:") &&
         !normalized.startsWith("entregado por:") &&
-        !normalized.startsWith("entregado el:")
+        !normalized.startsWith("entregado el:") &&
+        !normalized.startsWith("enviado por:") &&
+        !normalized.startsWith("enviado el:") &&
+        !normalized.startsWith("evidencia")
       );
     })
     .join("\n")
@@ -105,38 +117,10 @@ function getVisibleDescription(description: string | null | undefined) {
   return cleaned || null;
 }
 
-function extractFileNameFromPath(path: string | null | undefined) {
-  if (!path) return null;
-  const lastSlash = path.lastIndexOf("/");
-  const name = lastSlash >= 0 ? path.slice(lastSlash + 1) : path;
-  return name || null;
-}
-
-function getSubmissionDisplayName(
-  submissionName: string | null | undefined,
-  submissionPath: string | null | undefined,
-  fallbackDescription: string | null | undefined
-) {
-  if (submissionName && submissionName.trim().length > 0) {
-    return submissionName;
-  }
-  const fromPath = extractFileNameFromPath(submissionPath);
-  if (fromPath) {
-    return fromPath;
-  }
-  const meta = extractEntregaMeta(fallbackDescription);
-  const fromMetaPath = extractFileNameFromPath(meta.path);
-  return fromMetaPath ?? "Documento.pdf";
-}
-
 function hasDeliveryEvidence(t: TaskRow) {
-  return Boolean(
-    t.submission_path ||
-      extractEntregaPathFromDescription(t.description) ||
-      t.submission_name ||
-      t.submitted_at ||
-      t.submitted_by_email
-  );
+  const files = parseSubmissionFiles(t);
+  if (files.length > 0) return true;
+  return Boolean(t.submitted_at || t.submitted_by_email);
 }
 
 export function TaskBoard({
@@ -158,23 +142,23 @@ export function TaskBoard({
 }) {
   const [openId, setOpenId] = useState<string | null>(null);
   const [submissionSizeError, setSubmissionSizeError] = useState<string | null>(null);
+  const [selectedFileNames, setSelectedFileNames] = useState<string[]>([]);
 
   const selected = useMemo(() => {
     if (!openId) return null;
     return tasks.find((t) => t.id === openId) ?? null;
   }, [openId, tasks]);
 
+  const deliveryFiles: SubmissionFile[] = selected
+    ? parseSubmissionFiles(selected)
+    : [];
   const deliveryMeta = extractEntregaMeta(selected?.description);
-  const deliveryPath = selected?.submission_path ?? deliveryMeta.path;
-  const selectedHasDelivery = selected ? hasDeliveryEvidence(selected) : false;
+  const selectedHasDelivery =
+    (selected ? hasDeliveryEvidence(selected) : false) ||
+    deliveryFiles.length > 0;
   const visibleDescription = getVisibleDescription(selected?.description);
   const submittedAtLabel = selected?.submitted_at ?? deliveryMeta.submittedAt;
   const submittedByLabel = selected?.submitted_by_email ?? deliveryMeta.submittedBy;
-  const deliveryFileName = getSubmissionDisplayName(
-    selected?.submission_name,
-    selected?.submission_path,
-    selected?.description
-  );
 
   const isCompleted = (status: string | null | undefined) => {
     const normalized = (status ?? "").trim().toLowerCase();
@@ -183,6 +167,7 @@ export function TaskBoard({
 
   const resetModalState = () => {
     setSubmissionSizeError(null);
+    setSelectedFileNames([]);
   };
 
   return (
@@ -245,20 +230,18 @@ export function TaskBoard({
                   </div>
                   {hasDeliveryEvidence(t) && (
                     <div className="flex items-center justify-between gap-3">
-                      <span>Archivo</span>
+                      <span>
+                        Evidencia{parseSubmissionFiles(t).length !== 1 ? "s" : ""}
+                      </span>
                       <span
                         className="max-w-[60%] truncate font-medium text-emerald-700 dark:text-emerald-300"
-                        title={getSubmissionDisplayName(
-                          t.submission_name,
-                          t.submission_path,
-                          t.description
-                        )}
+                        title={parseSubmissionFiles(t)
+                          .map((f) => f.name)
+                          .join(", ")}
                       >
-                        {getSubmissionDisplayName(
-                          t.submission_name,
-                          t.submission_path,
-                          t.description
-                        )}
+                        {parseSubmissionFiles(t).length > 0
+                          ? `${parseSubmissionFiles(t).length} archivo${parseSubmissionFiles(t).length !== 1 ? "s" : ""}`
+                          : "PDF adjunto"}
                       </span>
                     </div>
                   )}
@@ -379,47 +362,50 @@ export function TaskBoard({
 
               {selectedHasDelivery && (
                 <div className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-black">
-                  <div className="flex items-start gap-3">
-                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-200 dark:bg-emerald-950/30 dark:text-emerald-300 dark:ring-emerald-900">
-                      <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" className="h-5 w-5">
-                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                        <path d="M14 2v6h6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                        <path d="M9 15h6M9 18h4" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-                      </svg>
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div
-                        className="truncate text-sm font-semibold text-zinc-950 dark:text-zinc-50"
-                        title={deliveryFileName}
-                      >
-                        {deliveryFileName}
-                      </div>
-                      <div className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-                        {submittedByLabel ? `Enviado por ${submittedByLabel}` : "Documento PDF"}
-                      </div>
-                    </div>
+                  <div className="text-sm font-semibold text-zinc-950 dark:text-zinc-50">
+                    Evidencia de cumplimiento
                   </div>
-                  <div className="mt-3 grid gap-2 text-sm text-zinc-700 dark:text-zinc-300">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <span className="text-zinc-600 dark:text-zinc-400">Fecha de entrega</span>
-                      <span className="font-medium">
-                        {formatShortDate(submittedAtLabel)}
-                      </span>
-                    </div>
-                    <a
-                      href={`${downloadBasePath}?assignment_id=${encodeURIComponent(selected.id)}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="mt-1 inline-flex h-10 w-full items-center justify-center gap-2 rounded-md bg-zinc-900 px-4 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
-                    >
-                      <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" className="h-4 w-4">
-                        <path d="M12 3v12" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-                        <path d="m7 10 5 5 5-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                        <path d="M5 21h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-                      </svg>
-                      Ver PDF
-                    </a>
+                  <div className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                    {submittedByLabel ? `Enviado por ${submittedByLabel}` : "Documento PDF"}
+                    {submittedAtLabel
+                      ? ` · ${formatShortDate(submittedAtLabel)}`
+                      : ""}
                   </div>
+
+                  {deliveryFiles.length > 0 && (
+                    <div className="mt-3 grid gap-2">
+                      {deliveryFiles.map((f, idx) => (
+                        <a
+                          key={`${f.path}-${idx}`}
+                          href={`${downloadBasePath}?assignment_id=${encodeURIComponent(selected!.id)}&idx=${encodeURIComponent(String(idx))}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center justify-between gap-3 rounded-md border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm hover:bg-zinc-100 dark:border-zinc-800 dark:bg-zinc-900/40 dark:hover:bg-zinc-900"
+                        >
+                          <div className="flex min-w-0 items-center gap-3">
+                            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-200 dark:bg-emerald-950/30 dark:text-emerald-300 dark:ring-emerald-900">
+                              <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" className="h-5 w-5">
+                                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                                <path d="M14 2v6h6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                                <path d="M9 15h6M9 18h4" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                              </svg>
+                            </div>
+                            <div className="min-w-0">
+                              <div className="truncate text-sm font-medium text-zinc-950 dark:text-zinc-50">
+                                {f.name}
+                              </div>
+                              <div className="text-xs text-zinc-500 dark:text-zinc-400">
+                                Evidencia {idx + 1} · PDF
+                              </div>
+                            </div>
+                          </div>
+                          <div className="shrink-0 text-xs font-medium text-zinc-700 dark:text-zinc-300">
+                            Ver
+                          </div>
+                        </a>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -456,36 +442,94 @@ export function TaskBoard({
               {role === "usuario" && (
                 <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-4 dark:border-zinc-800 dark:bg-zinc-900/30">
                   <div className="text-sm font-medium text-zinc-950 dark:text-zinc-50">
-                    {selectedHasDelivery ? "Modificar entrega (PDF)" : "Subir archivo (PDF)"}
+                    {selectedHasDelivery
+                      ? "Modificar evidencias (PDF)"
+                      : "Subir evidencias (PDF)"}
                   </div>
-                  {selectedHasDelivery && (
-                    <div className="mt-2 text-sm text-zinc-700 dark:text-zinc-300">
-                      La entrega actual sigue guardada. Si subes otro PDF, se reemplaza por la nueva versión.
-                    </div>
-                  )}
+                  <div className="mt-2 text-sm text-zinc-700 dark:text-zinc-300">
+                    Puedes adjuntar hasta {MAX_EVIDENCE_FILES} archivos PDF como
+                    evidencia de cumplimiento (máx. 10 MB cada uno). Si vuelves
+                    a enviar, se reemplazan los archivos anteriores.
+                  </div>
                   <form action={onSubmit} method="POST" encType="multipart/form-data" className="mt-3 grid gap-3">
                     <input type="hidden" name="assignment_id" value={selected.id} />
                     <div className="grid gap-2">
                       <input
-                        name="file"
+                        name="files"
                         type="file"
                         accept="application/pdf,.pdf"
+                        multiple
                         required
                         onChange={(e) => {
-                          const f = e.target.files?.[0];
-                          if (f && f.size > MAX_SUBMISSION_SIZE_BYTES) {
+                          const fileList = e.target.files;
+                          const files = fileList ? Array.from(fileList) : [];
+                          if (files.length > MAX_EVIDENCE_FILES) {
                             setSubmissionSizeError(
-                              "El archivo no puede superar los 10,000 KB (10 MB). Selecciona un PDF más ligero."
+                              `Solo se permiten hasta ${MAX_EVIDENCE_FILES} archivos por entrega. Selecciona menos archivos.`
                             );
-                          } else {
-                            setSubmissionSizeError(null);
+                            setSelectedFileNames([]);
+                            return;
                           }
+                          const tooBig = files.find(
+                            (f) => f.size > MAX_SUBMISSION_SIZE_BYTES
+                          );
+                          if (tooBig) {
+                            setSubmissionSizeError(
+                              `El archivo ${tooBig.name} supera los 10,000 KB (10 MB). Reduce su tamaño.`
+                            );
+                            setSelectedFileNames([]);
+                            return;
+                          }
+                          setSubmissionSizeError(null);
+                          setSelectedFileNames(files.map((f) => f.name));
                         }}
                         className="block w-full text-sm text-zinc-700 file:mr-4 file:rounded-md file:border file:border-zinc-200 file:bg-white file:px-3 file:py-2 file:text-sm file:font-medium file:text-zinc-900 hover:file:bg-zinc-100 dark:text-zinc-300 dark:file:border-zinc-800 dark:file:bg-black dark:file:text-zinc-100 dark:hover:file:bg-zinc-900"
                       />
                       <div className="text-xs text-zinc-500 dark:text-zinc-400">
-                        Tamaño máximo permitido: 10,000 KB (10 MB). Formato: PDF.
+                        Formato permitido: PDF. Hasta {MAX_EVIDENCE_FILES}{" "}
+                        archivos. 10,000 KB (10 MB) máximo por archivo.
                       </div>
+                      {selectedFileNames.length > 0 && !submissionSizeError && (
+                        <div className="mt-1 grid gap-1.5">
+                          <div className="text-xs font-medium text-zinc-700 dark:text-zinc-300">
+                            Archivos seleccionados ({selectedFileNames.length}):
+                          </div>
+                          <div className="grid gap-1">
+                            {selectedFileNames.map((name, i) => (
+                              <div
+                                key={`${name}-${i}`}
+                                className="inline-flex items-center gap-2 rounded-md border border-zinc-200 bg-white px-3 py-2 text-xs dark:border-zinc-800 dark:bg-black"
+                              >
+                                <svg
+                                  viewBox="0 0 24 24"
+                                  fill="none"
+                                  xmlns="http://www.w3.org/2000/svg"
+                                  aria-hidden="true"
+                                  className="h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-400"
+                                >
+                                  <path
+                                    d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6Z"
+                                    stroke="currentColor"
+                                    strokeWidth="2"
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                  />
+                                  <path
+                                    d="M14 2v6h6"
+                                    stroke="currentColor"
+                                    strokeWidth="2"
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                  />
+                                </svg>
+                                <span className="truncate text-zinc-800 dark:text-zinc-200">
+                                  {name}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                       {submissionSizeError && (
                         <div className="text-xs font-medium text-red-700 dark:text-red-300">
                           {submissionSizeError}
@@ -497,7 +541,9 @@ export function TaskBoard({
                       disabled={Boolean(submissionSizeError)}
                       className={[
                         "inline-flex h-10 items-center justify-center rounded-md bg-zinc-900 px-4 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200",
-                        submissionSizeError ? "cursor-not-allowed opacity-50 hover:bg-zinc-900 dark:hover:bg-zinc-50" : "",
+                        submissionSizeError
+                          ? "cursor-not-allowed opacity-50 hover:bg-zinc-900 dark:hover:bg-zinc-50"
+                          : "",
                       ].join(" ")}
                     >
                       {selectedHasDelivery || isCompleted(selected.status)

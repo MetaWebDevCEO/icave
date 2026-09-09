@@ -13,6 +13,22 @@ import {
   buildSections,
   resolveRoleForUser,
 } from "@/lib/platform-roles";
+import {
+  buildEvidenceDescription,
+  cleanupFolder,
+  extractFileName,
+  getUpdatePayload,
+  isPdfBytes,
+  isSchemaMismatchPostgres,
+  listEvidenceInFolder,
+  maxEvidenceFiles,
+  maxSubmissionSizeBytes,
+  normalizeEmail,
+  parseSubmissionFiles,
+  sanitizeFileName,
+  stripLegacyEntregaLines,
+  type SubmissionFile,
+} from "@/lib/submission-files";
 
 export const dynamic = "force-dynamic";
 
@@ -28,146 +44,18 @@ function getSearchParam(
   return typeof value === "string" ? value : undefined;
 }
 
-function normalizeEmail(value: string | null | undefined) {
-  return (value ?? "").trim().toLowerCase();
-}
-
-function sanitizeFileName(fileName: string) {
-  return fileName.replace(/[^\w.\-()+\s]/g, "").replace(/\s+/g, " ").trim();
-}
-
-function isSchemaMismatch(err: PostgrestError | null) {
-  if (!err) return false;
-  const code = (err as unknown as { code?: string } | null)?.code ?? "";
-  const msg = (err.message ?? "").toLowerCase();
-  return (
-    code === "PGRST204" ||
-    msg.includes("schema cache") ||
-    msg.includes("could not find") ||
-    msg.includes("does not exist") ||
-    msg.includes("column")
-  );
-}
-
-const MAX_SUBMISSION_SIZE_BYTES = 10_000 * 1024;
-
 function extractEntregaPathFromDescription(description: string | null | undefined) {
   if (!description) return null;
   const match = /^\s*entrega:\s*(\S+)\s*$/im.exec(description);
   return match?.[1] ?? null;
 }
 
-function upsertEntregaIntoDescription(
-  description: string | null | undefined,
-  objectPath: string,
-  submittedByEmail: string,
-  submittedAtISO: string
-) {
-  const input = String(description ?? "").trimEnd();
-  const lines = input.length > 0 ? input.split(/\r?\n/) : [];
-  const filtered = lines.filter((line) => {
-    const normalized = line.trim().toLowerCase();
-    if (normalized.startsWith("entrega:")) return false;
-    if (normalized.startsWith("entregado por:")) return false;
-    if (normalized.startsWith("entregado el:")) return false;
-    return true;
-  });
-
-  const base = filtered.join("\n").trimEnd();
-  const meta = [
-    "Entrega: " + objectPath,
-    "Entregado por: " + submittedByEmail,
-    "Entregado el: " + submittedAtISO,
-  ].join("\n");
-
-  return base ? `${base}\n\n${meta}` : meta;
+function isSchemaMismatch(err: PostgrestError | null) {
+  return isSchemaMismatchPostgres(err);
 }
 
-async function findSubmissionInStorage(
-  client: SupabaseClient,
-  ownerUserId: string,
-  assignmentId: string
-) {
-  const folder = `entregas/${ownerUserId}/${assignmentId}`;
-  const { data, error } = await client.storage.from("asignaciones").list(folder, {
-    limit: 20,
-    offset: 0,
-  });
-
-  if (error || !data || data.length === 0) return null;
-
-  const exact = data.find((file) => file.name.toLowerCase() === "entrega.pdf");
-  const pdf = exact ?? data.find((file) => file.name.toLowerCase().endsWith(".pdf"));
-  if (!pdf) return null;
-
-  const displayName =
-    pdf.name.toLowerCase() !== "entrega.pdf" ? pdf.name : pdf.name;
-
-  return {
-    path: `${folder}/${pdf.name}`,
-    name: displayName,
-  };
-}
-
-async function bestEffortSyncSubmission(
-  supabase: SupabaseClient,
-  admin: SupabaseClient | null,
-  assignmentId: string,
-  description: string | null | undefined,
-  objectPath: string,
-  submittedByEmail?: string | null,
-  submittedAtISO?: string | null,
-  submissionName?: string | null
-) {
-  const syncedAt = submittedAtISO ?? new Date().toISOString();
-  const mergedDescription = upsertEntregaIntoDescription(
-    description,
-    objectPath,
-    submittedByEmail ?? "supervisor",
-    syncedAt
-  );
-
-  const fullPayload: Record<string, unknown> = {
-    status: "Completada",
-    description: mergedDescription,
-    submission_path: objectPath,
-    submitted_at: syncedAt,
-    submitted_by_email: submittedByEmail ?? null,
-    submission_name: submissionName ?? "entrega.pdf",
-    submission_mime: "application/pdf",
-  };
-
-  const midPayload: Record<string, unknown> = {
-    status: "Completada",
-    description: mergedDescription,
-    submission_path: objectPath,
-    submitted_at: syncedAt,
-    submitted_by_email: submittedByEmail ?? null,
-  };
-
-  const fallbackPayload: Record<string, unknown> = {
-    status: "Completada",
-    description: mergedDescription,
-  };
-
-  const tryPayload = async (payload: Record<string, unknown>) => {
-    const first = await supabase.from("asignaciones").update(payload).eq("id", assignmentId);
-    if (!first.error) return null;
-    if (!admin) return first.error;
-    const second = await admin.from("asignaciones").update(payload).eq("id", assignmentId);
-    return second.error;
-  };
-
-  let error = await tryPayload(fullPayload);
-  if (isSchemaMismatch(error)) {
-    error = await tryPayload(midPayload);
-  }
-  if (isSchemaMismatch(error)) {
-    error = await tryPayload(fallbackPayload);
-  }
-
-  return error;
-}
+const MAX_SUBMISSION_SIZE_BYTES = maxSubmissionSizeBytes();
+const MAX_EVIDENCE_FILES = maxEvidenceFiles();
 
 export default async function TaskPage({
   searchParams,
@@ -318,7 +206,9 @@ export default async function TaskPage({
 
   const rows = data ?? [];
   const needsStorageLookup = rows.some(
-    (row) => !row.submission_path && !extractEntregaPathFromDescription(row.description)
+    (row) =>
+      parseSubmissionFiles(row).length === 0 &&
+      (row.status ?? "").toLowerCase().includes("comp")
   );
 
   type UserOption = { value: string; label: string };
@@ -378,6 +268,51 @@ export default async function TaskPage({
       .map((email) => ({ value: email, label: email }));
   }
 
+  async function bestEffortSyncSubmission(
+    supabaseClient: SupabaseClient,
+    adminClient: SupabaseClient | null,
+    assignmentId: string,
+    description: string | null | undefined,
+    files: SubmissionFile[],
+    submittedByEmail?: string | null,
+    submittedAtISO?: string | null
+  ) {
+    const syncedAt = submittedAtISO ?? new Date().toISOString();
+    const email = submittedByEmail ?? "supervisor";
+    const mergedDescription = buildEvidenceDescription(
+      description,
+      files,
+      email,
+      syncedAt
+    );
+    const { full, mid, fallback } = getUpdatePayload(files);
+    const withDesc = (p: Record<string, unknown>) => ({
+      ...p,
+      description: mergedDescription,
+      submitted_at: syncedAt,
+      submitted_by_email: submittedByEmail ?? null,
+    });
+
+    const tryPayload = async (payload: Record<string, unknown>) => {
+      const first = await supabaseClient
+        .from("asignaciones")
+        .update(payload)
+        .eq("id", assignmentId);
+      if (!first.error) return null;
+      if (!adminClient) return first.error;
+      const second = await adminClient
+        .from("asignaciones")
+        .update(payload)
+        .eq("id", assignmentId);
+      return second.error;
+    };
+
+    let err = await tryPayload(withDesc(full));
+    if (isSchemaMismatch(err)) err = await tryPayload(withDesc(mid));
+    if (isSchemaMismatch(err)) err = await tryPayload(withDesc(fallback));
+    return err;
+  }
+
   if (needsStorageLookup) {
     const storageClient = admin ?? supabase;
     let assignedUserIdByEmail = new Map<string, string>();
@@ -393,51 +328,55 @@ export default async function TaskPage({
 
     data = await Promise.all(
       rows.map(async (row) => {
-        if (row.submission_path || extractEntregaPathFromDescription(row.description)) {
-          return row;
-        }
+        if (parseSubmissionFiles(row).length > 0) return row;
 
         const ownerUserId =
           role === "usuario"
             ? user.id
             : assignedUserIdByEmail.get(normalizeEmail(row.assigned_to_email));
-
         if (!ownerUserId) return row;
 
-        const found = await findSubmissionInStorage(storageClient, ownerUserId, row.id);
-        if (!found) return row;
+        const folder = `entregas/${ownerUserId}/${row.id}`;
+        const foundFiles = await listEvidenceInFolder(
+          storageClient,
+          "asignaciones",
+          folder
+        );
+        if (foundFiles.length === 0) return row;
 
-        const submissionPath = found.path;
-        const submissionName = found.name;
+        const ownerEmail =
+          normalizeEmail(row.assigned_to_email) ||
+          normalizeEmail(row.submitted_by_email) ||
+          "supervisor";
 
-        const syncError = await bestEffortSyncSubmission(
+        const syncErr = await bestEffortSyncSubmission(
           supabase,
           admin,
           row.id,
           row.description,
-          submissionPath,
-          row.submitted_by_email ?? normalizeEmail(row.assigned_to_email),
-          row.submitted_at,
-          row.submission_name ?? submissionName
+          foundFiles,
+          ownerEmail,
+          row.submitted_at
         );
 
+        const primary = foundFiles[0];
         return {
           ...row,
-          status:
-            !syncError &&
-            (row.status ?? "").trim().length > 0 &&
-            ((row.status ?? "").toLowerCase().includes("comp") ||
-              (row.status ?? "").toLowerCase().includes("done"))
+          status: syncErr
+            ? row.status
+            : (row.status ?? "").trim().length > 0
               ? row.status
               : "Completada",
-          submission_path: submissionPath,
-          submission_name: row.submission_name ?? submissionName,
-          submitted_by_email:
-            row.submitted_by_email ?? normalizeEmail(row.assigned_to_email) ?? null,
-          description: upsertEntregaIntoDescription(
+          submission_path: primary?.path ?? row.submission_path,
+          submission_name:
+            row.submission_name ?? primary?.name ?? "evidencia.pdf",
+          submission_mime: primary?.mime ?? "application/pdf",
+          submission_files: foundFiles as unknown as unknown,
+          submitted_by_email: row.submitted_by_email ?? ownerEmail,
+          description: buildEvidenceDescription(
             row.description,
-            submissionPath,
-            (row.submitted_by_email ?? normalizeEmail(row.assigned_to_email)) || "supervisor",
+            foundFiles,
+            ownerEmail,
             row.submitted_at ?? new Date().toISOString()
           ),
         };
@@ -540,23 +479,39 @@ export default async function TaskPage({
     const verifyClient = admin ?? supabase;
     const verify = await verifyClient
       .from("asignaciones")
-      .select("id, revisor_id, attachment_path")
+      .select("id, revisor_id, attachment_path, submission_path, assigned_to_email, submission_files, description")
       .eq("id", assignmentId)
       .maybeSingle();
 
     let row = verify.data as
-      | { id: string; revisor_id?: string | null; attachment_path?: string | null }
+      | {
+          id: string;
+          revisor_id?: string | null;
+          attachment_path?: string | null;
+          submission_path?: string | null;
+          assigned_to_email?: string | null;
+          submission_files?: unknown;
+          description?: string | null;
+        }
       | null;
     let verifyError = verify.error;
 
     if ((!row || verifyError) && admin && verifyClient !== admin) {
       const fallback = await admin
         .from("asignaciones")
-        .select("id, revisor_id, attachment_path")
+        .select("id, revisor_id, attachment_path, submission_path, assigned_to_email, submission_files, description")
         .eq("id", assignmentId)
         .maybeSingle();
       row = fallback.data as
-        | { id: string; revisor_id?: string | null; attachment_path?: string | null }
+        | {
+            id: string;
+            revisor_id?: string | null;
+            attachment_path?: string | null;
+            submission_path?: string | null;
+            assigned_to_email?: string | null;
+            submission_files?: unknown;
+            description?: string | null;
+          }
         | null;
       verifyError = fallback.error;
     }
@@ -575,12 +530,39 @@ export default async function TaskPage({
       );
     }
 
+    const storageClient = admin ?? supabase;
+    const toRemove: string[] = [];
+
     if (row.attachment_path) {
-      const storageClient = admin ?? supabase;
+      toRemove.push(row.attachment_path);
+    }
+
+    const evFiles = parseSubmissionFiles(row);
+    for (const ev of evFiles) {
+      if (ev.path) toRemove.push(ev.path);
+    }
+
+    if (toRemove.length > 0) {
       await storageClient.storage
         .from("asignaciones")
-        .remove([row.attachment_path])
+        .remove(toRemove)
         .catch(() => null);
+    }
+
+    const assignedUserId = (() => {
+      try {
+        const p = row?.submission_path;
+        if (p) {
+          const parts = p.split("/");
+          if (parts.length >= 3 && parts[0] === "entregas") return parts[1];
+        }
+      } catch {
+        /* ignore */
+      }
+      return null;
+    })();
+    if (assignedUserId) {
+      await cleanupFolder(storageClient, "asignaciones", `entregas/${assignedUserId}/${assignmentId}`);
     }
 
     const deleteClient = admin ?? supabase;
@@ -620,37 +602,49 @@ export default async function TaskPage({
     }
 
     const assignmentId = String(formData.get("assignment_id") ?? "").trim();
-    const file = formData.get("file");
-
     if (!assignmentId) {
       redirect("/platform/task?error=" + encodeURIComponent("Falta assignment_id."));
     }
 
-    if (!(file instanceof File) || file.size <= 0) {
-      redirect("/platform/task?error=" + encodeURIComponent("Selecciona un PDF."));
+    const uploadedFiles: File[] = [];
+    const legacySingle = formData.get("file");
+    if (legacySingle instanceof File && legacySingle.size > 0) {
+      uploadedFiles.push(legacySingle);
+    } else {
+      const multiFiles = formData.getAll("files");
+      for (const value of multiFiles) {
+        if (value instanceof File && value.size > 0) {
+          uploadedFiles.push(value);
+        }
+      }
     }
 
-    const name = file.name || "archivo.pdf";
-    const lower = name.toLowerCase();
-    if (!lower.endsWith(".pdf")) {
-      redirect("/platform/task?error=" + encodeURIComponent("Solo se permiten archivos PDF."));
+    if (uploadedFiles.length === 0) {
+      redirect("/platform/task?error=" + encodeURIComponent("Selecciona al menos un PDF."));
     }
 
-    if (file.size > MAX_SUBMISSION_SIZE_BYTES) {
+    if (uploadedFiles.length > MAX_EVIDENCE_FILES) {
       redirect(
         "/platform/task?error=" +
-          encodeURIComponent("El archivo no puede superar los 10,000 KB (10 MB).")
+          encodeURIComponent(
+            `No se permiten más de ${MAX_EVIDENCE_FILES} archivos por entrega.`
+          )
       );
     }
 
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    const header =
-      String.fromCharCode(bytes[0] ?? 0) +
-      String.fromCharCode(bytes[1] ?? 0) +
-      String.fromCharCode(bytes[2] ?? 0) +
-      String.fromCharCode(bytes[3] ?? 0);
-    if (header !== "%PDF") {
-      redirect("/platform/task?error=" + encodeURIComponent("El archivo no parece ser un PDF válido."));
+    for (const f of uploadedFiles) {
+      const lower = (f.name || "archivo.pdf").toLowerCase();
+      if (!lower.endsWith(".pdf")) {
+        redirect("/platform/task?error=" + encodeURIComponent("Solo se permiten archivos PDF."));
+      }
+      if (f.size > MAX_SUBMISSION_SIZE_BYTES) {
+        redirect(
+          "/platform/task?error=" +
+            encodeURIComponent(
+              "Cada archivo no puede superar los 10,000 KB (10 MB)."
+            )
+        );
+      }
     }
 
     const userEmail = normalizeEmail(user.email);
@@ -704,53 +698,68 @@ export default async function TaskPage({
       redirect("/platform/task?error=" + encodeURIComponent("Esta tarea no está asignada a tu usuario."));
     }
 
-    const safeName = sanitizeFileName(name) || "archivo.pdf";
     const folderPath = `entregas/${user.id}/${assignmentId}`;
-    const objectPath = `${folderPath}/${safeName}`;
-
-    const fileToUpload = new File([bytes], safeName, { type: "application/pdf" });
-
-    const cleanupFolder = async (client: SupabaseClient) => {
-      try {
-        const listed = await client.storage.from("asignaciones").list(folderPath, {
-          limit: 50,
-          offset: 0,
-        });
-        if (listed.data && listed.data.length > 0) {
-          const pdfsToRemove = listed.data
-            .filter((f) => f.name.toLowerCase().endsWith(".pdf"))
-            .map((f) => `${folderPath}/${f.name}`);
-          if (pdfsToRemove.length > 0) {
-            await client.storage.from("asignaciones").remove(pdfsToRemove).catch(() => null);
-          }
-        }
-      } catch {
-        /* ignore cleanup errors */
-      }
-    };
 
     if (admin) {
-      await cleanupFolder(admin);
+      await cleanupFolder(admin, "asignaciones", folderPath);
     } else {
-      await cleanupFolder(supabase);
+      await cleanupFolder(supabase, "asignaciones", folderPath);
     }
 
-    const uploadA = await supabase.storage.from("asignaciones").upload(objectPath, fileToUpload, {
-      contentType: "application/pdf",
-      upsert: true,
-    });
+    const validatedBuffers: { file: File; ab: ArrayBuffer }[] = [];
+    for (const f of uploadedFiles) {
+      const ab = await f.arrayBuffer();
+      const bytes = new Uint8Array(ab);
+      if (!isPdfBytes(bytes)) {
+        redirect(
+          "/platform/task?error=" +
+            encodeURIComponent("Uno de los archivos no parece ser un PDF válido.")
+        );
+      }
+      validatedBuffers.push({ file: f, ab });
+    }
 
-    if (uploadA.error && admin) {
-      const uploadB = await admin.storage.from("asignaciones").upload(objectPath, fileToUpload, {
-        contentType: "application/pdf",
-        upsert: true,
+    const uploadedEvidence: SubmissionFile[] = [];
+    for (const { file, ab } of validatedBuffers) {
+      const safeName =
+        sanitizeFileName(file.name || "") ||
+        `evidencia-${uploadedEvidence.length + 1}.pdf`;
+      const objectPath = `${folderPath}/${safeName}`;
+      const uploadBytes = new Uint8Array(ab) as unknown as BlobPart;
+      const fileToUpload = new File([uploadBytes], safeName, {
+        type: "application/pdf",
       });
 
-      if (uploadB.error) {
-        redirect("/platform/task?error=" + encodeURIComponent(uploadB.error.message));
+      const uploadA = await supabase.storage
+        .from("asignaciones")
+        .upload(objectPath, fileToUpload, {
+          contentType: "application/pdf",
+          upsert: true,
+        });
+
+      if (uploadA.error && admin) {
+        const uploadB = await admin.storage
+          .from("asignaciones")
+          .upload(objectPath, fileToUpload, {
+            contentType: "application/pdf",
+            upsert: true,
+          });
+        if (uploadB.error) {
+          redirect(
+            "/platform/task?error=" + encodeURIComponent(uploadB.error.message)
+          );
+        }
+      } else if (uploadA.error) {
+        redirect(
+          "/platform/task?error=" + encodeURIComponent(uploadA.error.message)
+        );
       }
-    } else if (uploadA.error) {
-      redirect("/platform/task?error=" + encodeURIComponent(uploadA.error.message));
+
+      uploadedEvidence.push({
+        path: objectPath,
+        name: safeName,
+        mime: "application/pdf",
+      });
     }
 
     const updateError = await bestEffortSyncSubmission(
@@ -758,10 +767,9 @@ export default async function TaskPage({
       admin,
       assignmentId,
       verifyRow?.description,
-      objectPath,
+      uploadedEvidence,
       userEmail,
-      new Date().toISOString(),
-      safeName
+      new Date().toISOString()
     );
 
     if (updateError) {
@@ -782,6 +790,9 @@ export default async function TaskPage({
     }
 
     const assignmentId = String(formData.get("assignment_id") ?? "").trim();
+    const idxRaw = formData.get("idx");
+    const idx = Number.isInteger(Number(idxRaw)) ? Math.max(0, Number(idxRaw)) : 0;
+
     if (!assignmentId) {
       redirect("/platform/task?error=" + encodeURIComponent("Falta assignment_id."));
     }
@@ -802,16 +813,25 @@ export default async function TaskPage({
           })
         : null;
 
-    const select = "id, revisor_id, assigned_to_email, submission_path, submission_name, description";
+    type Row = {
+      revisor_id?: string | null;
+      assigned_to_email?: string | null;
+      submission_path?: string | null;
+      submission_name?: string | null;
+      submission_mime?: string | null;
+      submission_files?: unknown;
+      description?: string | null;
+    };
+
+    const select =
+      "id, revisor_id, assigned_to_email, submission_path, submission_name, submission_mime, submission_files, description";
     const rowA = await supabase
       .from("asignaciones")
       .select(select)
       .eq("id", assignmentId)
       .maybeSingle();
 
-    let row = rowA.data as
-      | { revisor_id?: string | null; assigned_to_email?: string | null; submission_path?: string | null; submission_name?: string | null; description?: string | null }
-      | null;
+    let row: Row | null = rowA.data as Row | null;
     let rowError = rowA.error;
 
     if ((!row || rowError) && admin) {
@@ -820,9 +840,7 @@ export default async function TaskPage({
         .select(select)
         .eq("id", assignmentId)
         .maybeSingle();
-      row = rowB.data as
-        | { revisor_id?: string | null; assigned_to_email?: string | null; submission_path?: string | null; submission_name?: string | null; description?: string | null }
-        | null;
+      row = rowB.data as Row | null;
       rowError = rowB.error;
     }
 
@@ -832,8 +850,10 @@ export default async function TaskPage({
     if (!row) {
       redirect("/platform/task?error=" + encodeURIComponent("No se encontró la asignación."));
     }
-    const path = row?.submission_path ?? extractEntregaPathFromDescription(row?.description);
-    if (!path) {
+
+    const files = parseSubmissionFiles(row);
+    const chosen = files[idx] ?? files[0];
+    if (!chosen) {
       redirect("/platform/task");
     }
 
@@ -849,7 +869,7 @@ export default async function TaskPage({
 
     const signedA = await supabase.storage
       .from("asignaciones")
-      .createSignedUrl(path, 60);
+      .createSignedUrl(chosen.path, 60);
 
     let signedUrl = signedA.data?.signedUrl ?? null;
     let signedError = signedA.error;
@@ -857,7 +877,7 @@ export default async function TaskPage({
     if ((!signedUrl || signedError) && admin) {
       const signedB = await admin.storage
         .from("asignaciones")
-        .createSignedUrl(path, 60);
+        .createSignedUrl(chosen.path, 60);
       signedUrl = signedB.data?.signedUrl ?? null;
       signedError = signedB.error;
     }
@@ -869,18 +889,13 @@ export default async function TaskPage({
       );
     }
 
-    const extractFileName = (p: string) => {
-      const lastSlash = p.lastIndexOf("/");
-      return lastSlash >= 0 ? p.slice(lastSlash + 1) : p;
-    };
-
-    let submissionName = (row as { submission_name?: string | null } | null)?.submission_name?.trim();
+    let submissionName: string | undefined = chosen.name?.trim();
     if (!submissionName || submissionName.toLowerCase() === "entrega.pdf") {
-      submissionName = extractFileName(path);
+      submissionName = extractFileName(chosen.path) ?? undefined;
     }
     submissionName = submissionName && submissionName.trim().length > 0
       ? submissionName
-      : "entrega.pdf";
+      : "evidencia.pdf";
 
     try {
       const resp = await fetch(signedUrl, { cache: "no-store" });
@@ -895,7 +910,7 @@ export default async function TaskPage({
       const buffer = Buffer.from(bytes);
       const fileName = encodeURIComponent(submissionName).replace(/'/g, "%27");
       const headers = new Headers({
-        "Content-Type": (blob.type || "application/pdf") + "; charset=utf-8",
+        "Content-Type": (chosen.mime || blob.type || "application/pdf") + "; charset=utf-8",
         "Content-Length": String(buffer.byteLength),
         "Content-Disposition":
           "attachment; filename*=UTF-8''" + fileName,

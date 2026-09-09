@@ -5,122 +5,16 @@ import {
 } from "@supabase/supabase-js";
 import { NextRequest, NextResponse } from "next/server";
 import { resolveRoleForUser } from "@/lib/platform-roles";
+import {
+  listEvidenceInFolder,
+  normalizeEmail,
+  parseSubmissionFiles,
+  type SubmissionFile,
+} from "@/lib/submission-files";
 
 export const dynamic = "force-dynamic";
 
 const BASE_PATH = "/platform/task";
-
-function normalizeEmail(value: string | null | undefined) {
-  return (value ?? "").trim().toLowerCase();
-}
-
-function extractFileName(p: string | null | undefined): string {
-  if (!p) return "";
-  const lastSlash = p.lastIndexOf("/");
-  return lastSlash >= 0 ? p.slice(lastSlash + 1) : p;
-}
-
-function resolveSubmissionName(
-  submissionName: string | null | undefined,
-  submissionPath: string | null | undefined,
-  fallback: string
-) {
-  const trimmed = submissionName?.trim() ?? "";
-  if (trimmed.length > 0 && trimmed.toLowerCase() !== "entrega.pdf") {
-    return trimmed;
-  }
-  const fromPath = extractFileName(submissionPath);
-  if (fromPath.length > 0) return fromPath;
-  return fallback;
-}
-
-function extractEntregaPathFromDescription(
-  description: string | null | undefined
-) {
-  if (!description) return null;
-  const marker = "[Entrega]";
-  const start = description.indexOf(marker);
-  if (start === -1) return null;
-  const tail = description.slice(start + marker.length);
-  const line = tail
-    .split(/\r?\n/)
-    .map((s) => s.trim())
-    .find(Boolean);
-  if (!line) return null;
-  const cleaned = line
-    .replace(
-      /^[A-Za-z0-9_\- /:.()+\u00C0-\u024F]+(?:\.(?:pdf|PDF))/,
-      (m) => m
-    )
-    .trim();
-  return cleaned.length > 0 ? cleaned : null;
-}
-
-type FoundFile = { path: string; name: string };
-
-async function findSubmissionInStorage(
-  client: SupabaseClient,
-  ownerUserId: string | null | undefined,
-  assignmentId: string
-): Promise<FoundFile | null> {
-  if (ownerUserId) {
-    const folder = `entregas/${ownerUserId}/${assignmentId}`;
-    const { data, error } = await client.storage
-      .from("asignaciones")
-      .list(folder, { limit: 20, offset: 0 });
-    if (!error && data && data.length > 0) {
-      const exact = data.find(
-        (file) => file.name.toLowerCase() === "entrega.pdf"
-      );
-      const pdf =
-        exact ?? data.find((file) => file.name.toLowerCase().endsWith(".pdf"));
-      if (pdf) {
-        return {
-          path: `${folder}/${pdf.name}`,
-          name: pdf.name,
-        };
-      }
-    }
-  }
-
-  // Fallback: listar entregas/ y todas las carpetas buscando el assignmentId
-  try {
-    const { data: root } = await client.storage
-      .from("asignaciones")
-      .list("entregas", { limit: 500, offset: 0 });
-    if (!root || root.length === 0) return null;
-    for (const userFolder of root) {
-      if (!userFolder || userFolder.id) continue; // skip files, only folders
-      const folder = `entregas/${userFolder.name}/${assignmentId}`;
-      const { data: files } = await client.storage
-        .from("asignaciones")
-        .list(folder, { limit: 20, offset: 0 });
-      if (!files || files.length === 0) continue;
-      const exact = files.find(
-        (file) => file.name.toLowerCase() === "entrega.pdf"
-      );
-      const pdf =
-        exact ??
-        files.find((file) => file.name.toLowerCase().endsWith(".pdf"));
-      if (pdf) {
-        return {
-          path: `${folder}/${pdf.name}`,
-          name: pdf.name,
-        };
-      }
-    }
-  } catch {
-    return null;
-  }
-  return null;
-}
-
-let __foundNameFallback: string | undefined;
-function popFoundNameFallback() {
-  const v = __foundNameFallback;
-  __foundNameFallback = undefined;
-  return v;
-}
 
 const FAVICON_HREF = "/iso%20(2).svg";
 const DOC_TITLE = "Promas Download";
@@ -192,6 +86,9 @@ export async function GET(req: NextRequest) {
   const assignmentId = String(
     req.nextUrl.searchParams.get("assignment_id") ?? ""
   ).trim();
+  const idxRaw = req.nextUrl.searchParams.get("idx");
+  const idx = Number.isInteger(Number(idxRaw)) ? Math.max(0, Number(idxRaw)) : 0;
+
   if (!assignmentId) {
     return new NextResponse(
       errorHtml(
@@ -222,15 +119,17 @@ export async function GET(req: NextRequest) {
       : null;
 
   const select =
-    "id, revisor_id, assigned_to_email, submission_path, submission_name, description";
+    "id, revisor_id, assigned_to_email, submission_path, submission_name, submission_mime, submission_files, description";
 
   type Row = {
     revisor_id?: string | null;
     assigned_to_email?: string | null;
     submission_path?: string | null;
     submission_name?: string | null;
+    submission_mime?: string | null;
+    submission_files?: unknown;
     description?: string | null;
-    assigned_to?: string | null; // fallback para user id
+    assigned_to?: string | null;
   };
 
   let row: Row | null = null;
@@ -267,43 +166,83 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  let path = row.submission_path ?? extractEntregaPathFromDescription(row.description);
+  let files: SubmissionFile[] = parseSubmissionFiles(row);
   let fallbackResolvedName: string | undefined;
 
-  if (!path) {
-    // Intentar sacar el user_id del usuario supervisor asignado para escanear su carpeta
+  if (files.length === 0) {
     let ownerUserId: string | null | undefined = undefined;
     if (admin && row.assigned_to_email) {
-      const { data: profiles } = await admin
-        .from("user_roles")
-        .select("user_id")
-        .limit(1000);
-      if (profiles && profiles.length > 0) {
-        const emails = await Promise.all(
-          profiles.map(async (p) => {
-            const u = await admin.auth.admin.getUserById((p as any).user_id).catch(() => null);
-            if (u?.data?.user?.email && normalizeEmail(u.data.user.email) === normalizeEmail(row!.assigned_to_email)) {
-              return (p as any).user_id as string;
-            }
-            return null;
-          })
-        );
-        ownerUserId = emails.find((x) => x) ?? undefined;
+      try {
+        const profiles = (
+          await admin.from("user_roles").select("user_id").limit(1000)
+        ).data;
+        if (profiles && profiles.length > 0) {
+          const emails = await Promise.all(
+            profiles.map(async (p) => {
+              const u = await admin.auth.admin
+                .getUserById((p as { user_id: string }).user_id)
+                .catch(() => null);
+              if (
+                u?.data?.user?.email &&
+                normalizeEmail(u.data.user.email) ===
+                  normalizeEmail(row!.assigned_to_email)
+              ) {
+                return (p as { user_id: string }).user_id;
+              }
+              return null;
+            })
+          );
+          ownerUserId = emails.find((x) => x) ?? undefined;
+        }
+      } catch {
+        /* fallthrough: storage search con fallback amplio */
       }
     }
 
     const storageClient = (admin ?? supabase) as SupabaseClient;
-    const found = await findSubmissionInStorage(
-      storageClient,
-      ownerUserId,
-      assignmentId
-    );
-    if (found) {
-      path = found.path;
-      fallbackResolvedName = found.name;
+    const fallbackList: SubmissionFile[] = [];
+    const tryFolder = async (uid: string) => {
+      const f = await listEvidenceInFolder(
+        storageClient,
+        "asignaciones",
+        `entregas/${uid}/${assignmentId}`
+      );
+      if (f.length > 0) return f;
+      return null;
+    };
+    if (ownerUserId) {
+      const r = await tryFolder(ownerUserId);
+      if (r) fallbackList.push(...r);
+    }
+    if (fallbackList.length === 0) {
+      try {
+        const root = (
+          await storageClient.storage
+            .from("asignaciones")
+            .list("entregas", { limit: 500, offset: 0 })
+        ).data;
+        if (root && root.length > 0) {
+          for (const folder of root) {
+            if (folder.id) continue;
+            const r = await tryFolder(folder.name);
+            if (r) {
+              fallbackList.push(...r);
+              break;
+            }
+          }
+        }
+      } catch {
+        /* fallback empty */
+      }
+    }
+    files = fallbackList;
+    if (files.length > 0 && !files[idx]) {
+      fallbackResolvedName = files[0].name;
     }
   }
-  if (!path) {
+
+  const chosen = files[idx] ?? files[0];
+  if (!chosen) {
     return new NextResponse(
       errorHtml(
         "No hay archivo adjunto",
@@ -337,7 +276,7 @@ export async function GET(req: NextRequest) {
 
   const signedA = await supabase.storage
     .from("asignaciones")
-    .createSignedUrl(path, ttlSeconds);
+    .createSignedUrl(chosen.path, ttlSeconds);
   if (signedA.data?.signedUrl) {
     signedUrl = signedA.data.signedUrl;
   } else if (signedA.error) {
@@ -347,7 +286,7 @@ export async function GET(req: NextRequest) {
   if (!signedUrl && admin) {
     const signedB = await admin.storage
       .from("asignaciones")
-      .createSignedUrl(path, ttlSeconds);
+      .createSignedUrl(chosen.path, ttlSeconds);
     if (signedB.data?.signedUrl) {
       signedUrl = signedB.data.signedUrl;
     } else if (signedB.error) {
@@ -362,13 +301,7 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  const fileName = fallbackResolvedName
-    ? fallbackResolvedName
-    : resolveSubmissionName(
-        row.submission_name,
-        path,
-        "entrega.pdf"
-      );
+  const fileName = fallbackResolvedName ?? chosen.name;
 
   try {
     const resp = await fetch(signedUrl, { cache: "no-store" });

@@ -157,7 +157,11 @@ export default async function AsignacionRevisorPage({
   const sp = await searchParams;
   const errorParam = getSearchParam(sp, "error");
   const messageParam = getSearchParam(sp, "message");
-  const statusFilter = getSearchParam(sp, "status");
+  const statusFilter = getSearchParam(sp, "status") ?? "all";
+  const dateFrom = getSearchParam(sp, "date_from");
+  const dateTo = getSearchParam(sp, "date_to");
+  const supervisorFilter = getSearchParam(sp, "supervisor");
+  const searchQuery = getSearchParam(sp, "q");
   const maxDueISO = getLastDayOfCurrentMonthISO();
 
   let userEmails: string[] = [];
@@ -550,15 +554,131 @@ export default async function AsignacionRevisorPage({
     }
   }
 
+  const userOptions = userEmails.map((email) => ({
+    value: email,
+    label: email,
+  }));
+
+  function normalizeEmail(value: string | null | undefined) {
+    return (value ?? "").trim().toLowerCase();
+  }
+
   const allAssignments = (listData ?? []) as AssignmentRow[];
-  const assignments =
-    statusFilter && statusFilter !== "all"
-      ? allAssignments.filter((a) =>
-          (a.status ?? "")
-            .toLowerCase()
-            .includes(statusFilter.toLowerCase())
-        )
-      : allAssignments;
+  const assignments = allAssignments.filter((row) => {
+    const status = (row.status ?? "").trim().toLowerCase();
+    const passStatus =
+      statusFilter === "all"
+        ? true
+        : statusFilter === "pending"
+          ? status.includes("pend")
+          : statusFilter === "progress"
+            ? status.includes("prog") || status.includes("curso")
+            : statusFilter === "completed"
+              ? status.includes("comp") || status.includes("done")
+              : status.includes(statusFilter.toLowerCase());
+
+    if (!passStatus) return false;
+
+    const supervisorNeedle = normalizeEmail(supervisorFilter);
+    if (supervisorNeedle) {
+      const haystacks = [
+        normalizeEmail(row.assigned_to_email),
+        normalizeEmail(row.assigned_to),
+        normalizeEmail(extractAssignedEmail(row.description)),
+      ];
+      const match = haystacks.some((h) => h && h.includes(supervisorNeedle));
+      if (!match) return false;
+    }
+
+    const isoFrom = (dateFrom ?? "").trim();
+    const isoTo = (dateTo ?? "").trim();
+    if (isoFrom || isoTo) {
+      const candidates = [
+        row.created_at,
+        row.due_at,
+      ].filter(Boolean) as string[];
+
+      const t = candidates.map((iso) => new Date(iso).getTime());
+
+      if (t.length === 0) {
+        return false;
+      }
+
+      if (isoFrom) {
+        const d = new Date(isoFrom);
+        if (!Number.isNaN(d.getTime())) {
+          const fromTs = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0).getTime();
+          if (!t.some((x) => x >= fromTs)) return false;
+        }
+      }
+      if (isoTo) {
+        const d = new Date(isoTo);
+        if (!Number.isNaN(d.getTime())) {
+          const toTs = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999).getTime();
+          if (!t.some((x) => x <= toTs)) return false;
+        }
+      }
+    }
+
+    const needle = (searchQuery ?? "").trim().toLowerCase();
+    if (needle.length > 0) {
+      const haystack = [
+        row.title ?? "",
+        row.description ?? "",
+        row.assigned_to_email ?? "",
+        row.assigned_to ?? "",
+        extractAssignedEmail(row.description) ?? "",
+        row.priority ?? "",
+        row.status ?? "",
+      ]
+        .join(" ")
+        .toLowerCase();
+      if (!haystack.includes(needle)) return false;
+    }
+
+    return true;
+  });
+
+  const basePath = "/platform/revisor/asignacion";
+
+  function buildQuery(entries: Record<string, string | undefined>) {
+    const params = new URLSearchParams();
+    for (const [k, v] of Object.entries(entries)) {
+      if (v && String(v).trim().length > 0) params.set(k, v);
+    }
+    const q = params.toString();
+    return q ? `?${q}` : "";
+  }
+
+  function filterClass(key: string) {
+    const active =
+      key === "all"
+        ? !statusFilter || statusFilter === "all"
+        : statusFilter?.includes(key);
+    return [
+      "rounded-full px-3 py-1.5",
+      active
+        ? "bg-zinc-900 text-white dark:bg-zinc-50 dark:text-zinc-900"
+        : "bg-zinc-100 text-zinc-700 hover:bg-zinc-200 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800",
+    ].join(" ");
+  }
+
+  const preserve: Record<string, string | undefined> = {
+    status: statusFilter && statusFilter !== "all" ? statusFilter : undefined,
+    date_from: dateFrom,
+    date_to: dateTo,
+    supervisor: supervisorFilter,
+    q: searchQuery,
+  };
+
+  const linkForStatus = (status: string) => {
+    return `${basePath}${buildQuery({
+      ...preserve,
+      status: status === "all" ? undefined : status,
+    })}`;
+  };
+
+  const clearLink = `${basePath}?status=all`;
 
   return (
     <PlatformShell
@@ -575,41 +695,99 @@ export default async function AsignacionRevisorPage({
             </div>
           </div>
 
-          <div className="flex items-center gap-2 text-sm">
-            <a
-              href="/platform/revisor/asignacion?status=all"
-              className={[
-                "rounded-full px-3 py-1.5",
-                !statusFilter || statusFilter === "all"
-                  ? "bg-zinc-900 text-white dark:bg-zinc-50 dark:text-zinc-900"
-                  : "bg-zinc-100 text-zinc-700 hover:bg-zinc-200 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800",
-              ].join(" ")}
-            >
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <a href={linkForStatus("all")} className={filterClass("all")}>
               Todas
             </a>
-            <a
-              href="/platform/revisor/asignacion?status=pend"
-              className={[
-                "rounded-full px-3 py-1.5",
-                statusFilter?.includes("pend")
-                  ? "bg-zinc-900 text-white dark:bg-zinc-50 dark:text-zinc-900"
-                  : "bg-zinc-100 text-zinc-700 hover:bg-zinc-200 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800",
-              ].join(" ")}
-            >
+            <a href={linkForStatus("pending")} className={filterClass("pend")}>
               Pendientes
             </a>
-            <a
-              href="/platform/revisor/asignacion?status=comp"
-              className={[
-                "rounded-full px-3 py-1.5",
-                statusFilter?.includes("comp")
-                  ? "bg-zinc-900 text-white dark:bg-zinc-50 dark:text-zinc-900"
-                  : "bg-zinc-100 text-zinc-700 hover:bg-zinc-200 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800",
-              ].join(" ")}
-            >
+            <a href={linkForStatus("progress")} className={filterClass("prog")}>
+              En curso
+            </a>
+            <a href={linkForStatus("completed")} className={filterClass("comp")}>
               Completadas
             </a>
           </div>
+        </div>
+
+        <div className="mt-4 rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
+          <form
+            method="GET"
+            action={basePath}
+            className="grid grid-cols-1 gap-3 md:grid-cols-[2fr_1fr_1fr_1.3fr_auto_auto]"
+          >
+            <input type="hidden" name="status" value={statusFilter ?? "all"} />
+
+            <label className="grid gap-1 text-sm">
+              <span className="text-zinc-600 dark:text-zinc-400">
+                Buscar actividad
+              </span>
+              <input
+                type="search"
+                name="q"
+                defaultValue={searchQuery ?? ""}
+                placeholder="Título, descripción, asignado, prioridad…"
+                className="h-10 rounded-md border border-zinc-200 bg-white px-3 text-sm text-zinc-950 outline-none focus:ring-2 focus:ring-zinc-400 dark:border-zinc-800 dark:bg-black dark:text-zinc-50"
+              />
+            </label>
+
+            <label className="grid gap-1 text-sm">
+              <span className="text-zinc-600 dark:text-zinc-400">Desde</span>
+              <input
+                type="date"
+                name="date_from"
+                defaultValue={dateFrom ?? ""}
+                className="h-10 rounded-md border border-zinc-200 bg-white px-3 text-sm text-zinc-950 outline-none focus:ring-2 focus:ring-zinc-400 dark:border-zinc-800 dark:bg-black dark:text-zinc-50"
+              />
+            </label>
+
+            <label className="grid gap-1 text-sm">
+              <span className="text-zinc-600 dark:text-zinc-400">Hasta</span>
+              <input
+                type="date"
+                name="date_to"
+                defaultValue={dateTo ?? ""}
+                className="h-10 rounded-md border border-zinc-200 bg-white px-3 text-sm text-zinc-950 outline-none focus:ring-2 focus:ring-zinc-400 dark:border-zinc-800 dark:bg-black dark:text-zinc-50"
+              />
+            </label>
+
+            <label className="grid gap-1 text-sm">
+              <span className="text-zinc-600 dark:text-zinc-400">
+                Asignado a
+              </span>
+              <select
+                name="supervisor"
+                defaultValue={supervisorFilter ?? ""}
+                className="h-10 rounded-md border border-zinc-200 bg-white px-3 text-sm text-zinc-950 outline-none focus:ring-2 focus:ring-zinc-400 dark:border-zinc-800 dark:bg-black dark:text-zinc-50"
+              >
+                <option value="">Todos los usuarios</option>
+                {userOptions.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <div className="flex items-end">
+              <button
+                type="submit"
+                className="h-10 w-full rounded-md bg-zinc-900 px-4 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
+              >
+                Filtrar
+              </button>
+            </div>
+
+            <div className="flex items-end">
+              <a
+                href={clearLink}
+                className="inline-flex h-10 w-full items-center justify-center rounded-md border border-zinc-200 bg-white px-4 text-sm font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-800 dark:bg-black dark:text-zinc-300 dark:hover:bg-zinc-900"
+              >
+                Limpiar
+              </a>
+            </div>
+          </form>
         </div>
 
         {(errorParam || messageParam) && (
