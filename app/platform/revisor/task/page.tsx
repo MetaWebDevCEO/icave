@@ -1,5 +1,4 @@
 import { createClient } from "@/utils/supabase/server";
-import { NextResponse } from "next/server";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { TaskPageContent } from "@/app/platform/task/task-page-content";
@@ -13,6 +12,13 @@ import {
   buildSections,
   resolveRoleForUser,
 } from "@/lib/platform-roles";
+import {
+  parseSubmissionFiles,
+  isValidSubmissionPath,
+  normalizeEmail as normalizeEmailUtil,
+  listEvidenceInFolder,
+  type SubmissionFile,
+} from "@/lib/submission-files";
 
 export const dynamic = "force-dynamic";
 
@@ -31,7 +37,7 @@ function getSearchParam(
 }
 
 function normalizeEmail(value: string | null | undefined) {
-  return (value ?? "").trim().toLowerCase();
+  return normalizeEmailUtil(value);
 }
 
 function isSchemaMismatch(err: PostgrestError | null) {
@@ -83,26 +89,14 @@ async function findSubmissionInStorage(
   client: SupabaseClient,
   ownerUserId: string,
   assignmentId: string
-) {
-  const folder = `entregas/${ownerUserId}/${assignmentId}`;
-  const { data, error } = await client.storage.from("asignaciones").list(folder, {
-    limit: 20,
-    offset: 0,
-  });
-
-  if (error || !data || data.length === 0) return null;
-
-  const exact = data.find((file) => file.name.toLowerCase() === "entrega.pdf");
-  const pdf = exact ?? data.find((file) => file.name.toLowerCase().endsWith(".pdf"));
-  if (!pdf) return null;
-
-  const displayName =
-    pdf.name.toLowerCase() !== "entrega.pdf" ? pdf.name : pdf.name;
-
-  return {
-    path: `${folder}/${pdf.name}`,
-    name: displayName,
-  };
+): Promise<SubmissionFile[] | null> {
+  const files = await listEvidenceInFolder(
+    client,
+    "asignaciones",
+    `entregas/${ownerUserId}/${assignmentId}`
+  );
+  if (files.length === 0) return null;
+  return files;
 }
 
 async function bestEffortSyncSubmission(
@@ -110,33 +104,45 @@ async function bestEffortSyncSubmission(
   admin: SupabaseClient | null,
   assignmentId: string,
   description: string | null | undefined,
-  objectPath: string,
+  files: SubmissionFile[],
   submittedByEmail?: string | null,
-  submittedAtISO?: string | null,
-  submissionName?: string | null
+  submittedAtISO?: string | null
 ) {
+  const validFiles = files.filter((f) => isValidSubmissionPath(f.path));
+  if (validFiles.length === 0) {
+    return null;
+  }
   const syncedAt = submittedAtISO ?? new Date().toISOString();
+  const primary = validFiles[0];
+  const primaryPath = primary.path.trim().replace(/^\/+/, "");
   const mergedDescription = upsertEntregaIntoDescription(
     description,
-    objectPath,
+    primaryPath,
     submittedByEmail ?? "supervisor",
     syncedAt
   );
+  const filesJson = validFiles.map((f) => ({
+    path: f.path.trim().replace(/^\/+/, ""),
+    name: f.name,
+    mime: f.mime ?? "application/pdf",
+  }));
 
   const fullPayload: Record<string, unknown> = {
     status: "Completada",
     description: mergedDescription,
-    submission_path: objectPath,
+    submission_path: primaryPath,
+    submission_name: primary.name,
+    submission_mime: primary.mime ?? "application/pdf",
+    submission_files: filesJson,
     submitted_at: syncedAt,
     submitted_by_email: submittedByEmail ?? null,
-    submission_name: submissionName ?? "entrega.pdf",
-    submission_mime: "application/pdf",
   };
 
   const midPayload: Record<string, unknown> = {
     status: "Completada",
     description: mergedDescription,
-    submission_path: objectPath,
+    submission_path: primaryPath,
+    submission_files: filesJson,
     submitted_at: syncedAt,
     submitted_by_email: submittedByEmail ?? null,
   };
@@ -207,9 +213,9 @@ export default async function RevisorTaskPage({
   const selectFieldsBase =
     "id, created_at, status, title, description, due_at, priority, revisor_id, assigned_to_email";
   const selectFieldsMid =
-    "id, created_at, status, title, description, due_at, priority, revisor_id, assigned_to_email, submission_path, submitted_at, submitted_by_email";
+    "id, created_at, status, title, description, due_at, priority, revisor_id, assigned_to_email, submission_path, submission_files, submission_mime, submitted_at, submitted_by_email";
   const selectFieldsExtended =
-    "id, created_at, status, title, description, due_at, priority, revisor_id, assigned_to_email, submission_name, submission_path, submitted_at, submitted_by_email";
+    "id, created_at, status, title, description, due_at, priority, revisor_id, assigned_to_email, submission_name, submission_path, submission_files, submission_mime, submitted_at, submitted_by_email";
 
   const fetchRevisor = async (client: SupabaseClient) => {
     const extended = await client
@@ -260,60 +266,109 @@ export default async function RevisorTaskPage({
 
   const rows = data ?? [];
   const needsStorageLookup = rows.some(
-    (row) => !row.submission_path && !extractEntregaPathFromDescription(row.description)
+    (row) => parseSubmissionFiles(row).length === 0
   );
 
   if (needsStorageLookup && admin) {
     const storageClient = admin;
-    const listed = await admin.auth.admin.listUsers({ page: 1, perPage: 200 });
-    const assignedUserIdByEmail = new Map(
-      (listed.data?.users ?? [])
-        .map((candidate) => [normalizeEmail(candidate.email), candidate.id] as const)
-        .filter(([email]) => email.length > 0)
-    );
+    let assignedUserIdByEmail = new Map<string, string>();
+    try {
+      const listed = await admin.auth.admin.listUsers({ page: 1, perPage: 200 });
+      assignedUserIdByEmail = new Map(
+        (listed.data?.users ?? [])
+          .map((candidate) => [normalizeEmail(candidate.email), candidate.id] as const)
+          .filter(([email]) => email.length > 0)
+      );
+    } catch {
+      /* sin listUsers: usamos fallback de escaneo completo */
+    }
 
     data = await Promise.all(
       rows.map(async (row) => {
-        if (row.submission_path || extractEntregaPathFromDescription(row.description)) {
-          return row;
-        }
+        if (parseSubmissionFiles(row).length > 0) return row;
+
+        let found: SubmissionFile[] | null = null;
 
         const ownerUserId = assignedUserIdByEmail.get(normalizeEmail(row.assigned_to_email));
-        if (!ownerUserId) return row;
+        if (ownerUserId) {
+          found = await findSubmissionInStorage(storageClient, ownerUserId, row.id);
+        }
 
-        const found = await findSubmissionInStorage(storageClient, ownerUserId, row.id);
-        if (!found) return row;
+        if (!found) {
+          try {
+            const root = await storageClient.storage
+              .from("asignaciones")
+              .list("entregas", { limit: 500, offset: 0 });
+            if (root.data && root.data.length > 0) {
+              for (const folder of root.data) {
+                if (folder.id) continue;
+                const candidate = await findSubmissionInStorage(
+                  storageClient,
+                  folder.name,
+                  row.id
+                );
+                if (candidate && candidate.length > 0) {
+                  found = candidate;
+                  break;
+                }
+              }
+            }
+          } catch {
+            /* sin listado root: no hay fallback */
+          }
+        }
 
-        const submissionPath = found.path;
-        const submissionName = found.name;
+        if (!found || found.length === 0) return row;
+
+        const filesArr = found.filter((f) => isValidSubmissionPath(f.path));
+        if (filesArr.length === 0) return row;
+        const primaryPath = filesArr[0].path.trim().replace(/^\/+/, "");
+        const primaryName = filesArr[0].name;
+        const primaryMime = filesArr[0].mime ?? "application/pdf";
+        const filesJson = filesArr.map((f) => ({
+          path: f.path.trim().replace(/^\/+/, ""),
+          name: f.name,
+          mime: f.mime ?? "application/pdf",
+        }));
+        const statusWas = (row.status ?? "").trim();
+        const statusIsOpen =
+          statusWas.length === 0 ||
+          statusWas.toLowerCase().includes("pend") ||
+          statusWas.toLowerCase().includes("espera") ||
+          statusWas.toLowerCase().includes("curso") ||
+          statusWas.toLowerCase().includes("progreso") ||
+          statusWas.toLowerCase().includes("nueva") ||
+          statusWas.toLowerCase().includes("nuevo") ||
+          statusWas.toLowerCase().includes("open") ||
+          statusWas.toLowerCase().includes("todo");
 
         const syncError = await bestEffortSyncSubmission(
           supabase,
           admin,
           row.id,
           row.description,
-          submissionPath,
+          filesArr,
           row.submitted_by_email ?? normalizeEmail(row.assigned_to_email),
-          row.submitted_at,
-          row.submission_name ?? submissionName
+          row.submitted_at
         );
 
         return {
           ...row,
           status:
-            !syncError &&
-            (row.status ?? "").trim().length > 0 &&
-            ((row.status ?? "").toLowerCase().includes("comp") ||
-              (row.status ?? "").toLowerCase().includes("done"))
+            syncError
               ? row.status
-              : "Completada",
-          submission_path: submissionPath,
-          submission_name: row.submission_name ?? submissionName,
+              : statusIsOpen
+                ? "Completada"
+                : row.status,
+          submission_path: primaryPath,
+          submission_name: row.submission_name ?? primaryName,
+          submission_mime: (row as unknown as { submission_mime?: string | null }).submission_mime ?? primaryMime,
+          submission_files: (row as unknown as { submission_files?: unknown }).submission_files ?? filesJson,
           submitted_by_email:
             row.submitted_by_email ?? normalizeEmail(row.assigned_to_email) ?? null,
           description: upsertEntregaIntoDescription(
             row.description,
-            submissionPath,
+            primaryPath,
             (row.submitted_by_email ?? normalizeEmail(row.assigned_to_email)) || "supervisor",
             row.submitted_at ?? new Date().toISOString()
           ),
@@ -426,144 +481,10 @@ export default async function RevisorTaskPage({
     redirect(`${BASE_PATH}?message=` + encodeURIComponent("Asignación eliminada."));
   }
 
-  async function submitWork(_formData: FormData) {
+  async function submitWork(formData: FormData) {
     "use server";
+    void formData;
     redirect(`${BASE_PATH}?error=` + encodeURIComponent("Sólo los supervisores entregan tareas."));
-  }
-
-  async function downloadSubmission(formData: FormData) {
-    "use server";
-
-    const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-    const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-    if (!url || !anonKey || url.includes("__REPLACE_ME__") || anonKey.includes("__REPLACE_ME__")) {
-      redirect("/?error=" + encodeURIComponent("Configura Supabase primero (env vars)."));
-    }
-
-    const assignmentId = String(formData.get("assignment_id") ?? "").trim();
-    if (!assignmentId) {
-      redirect(`${BASE_PATH}?error=` + encodeURIComponent("Falta assignment_id."));
-    }
-
-    const supabase = await createClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-
-    if (!user) redirect("/");
-
-    const role = await resolveRoleForUser(supabase, user.id);
-
-    const admin =
-      serviceKey && !serviceKey.includes("__REPLACE_ME__")
-        ? createSupabaseAdminClient(url, serviceKey, {
-            auth: { persistSession: false, autoRefreshToken: false },
-          })
-        : null;
-
-    const select = "id, revisor_id, assigned_to_email, submission_path, submission_name, description";
-    const rowA = await supabase
-      .from("asignaciones")
-      .select(select)
-      .eq("id", assignmentId)
-      .maybeSingle();
-
-    let row = rowA.data as
-      | { revisor_id?: string | null; assigned_to_email?: string | null; submission_path?: string | null; submission_name?: string | null; description?: string | null }
-      | null;
-    let rowError = rowA.error;
-
-    if ((!row || rowError) && admin) {
-      const rowB = await admin
-        .from("asignaciones")
-        .select(select)
-        .eq("id", assignmentId)
-        .maybeSingle();
-      row = rowB.data as
-        | { revisor_id?: string | null; assigned_to_email?: string | null; submission_path?: string | null; submission_name?: string | null; description?: string | null }
-        | null;
-      rowError = rowB.error;
-    }
-
-    if (rowError) {
-      redirect(`${BASE_PATH}?error=` + encodeURIComponent(rowError.message));
-    }
-    if (!row) {
-      redirect(`${BASE_PATH}?error=` + encodeURIComponent("No se encontró la asignación."));
-    }
-    const path = row?.submission_path ?? extractEntregaPathFromDescription(row?.description);
-    if (!path) {
-      redirect(`${BASE_PATH}`);
-    }
-
-    const canAccess = role === "revisor";
-
-    if (!canAccess) {
-      redirect(`${BASE_PATH}?error=` + encodeURIComponent("No tienes permisos para descargar."));
-    }
-
-    const signedA = await supabase.storage
-      .from("asignaciones")
-      .createSignedUrl(path, 60);
-
-    let signedUrl = signedA.data?.signedUrl ?? null;
-    let signedError = signedA.error;
-
-    if ((!signedUrl || signedError) && admin) {
-      const signedB = await admin.storage
-        .from("asignaciones")
-        .createSignedUrl(path, 60);
-      signedUrl = signedB.data?.signedUrl ?? null;
-      signedError = signedB.error;
-    }
-
-    if (signedError || !signedUrl) {
-      redirect(
-        `${BASE_PATH}?error=` +
-          encodeURIComponent(signedError?.message ?? "No se pudo generar el enlace.")
-      );
-    }
-
-    const extractFileName = (p: string) => {
-      const lastSlash = p.lastIndexOf("/");
-      return lastSlash >= 0 ? p.slice(lastSlash + 1) : p;
-    };
-
-    let submissionName = (row as { submission_name?: string | null } | null)?.submission_name?.trim();
-    if (!submissionName || submissionName.toLowerCase() === "entrega.pdf") {
-      submissionName = extractFileName(path);
-    }
-    submissionName = submissionName && submissionName.trim().length > 0
-      ? submissionName
-      : "entrega.pdf";
-
-    try {
-      const resp = await fetch(signedUrl, { cache: "no-store" });
-      if (!resp.ok) {
-        redirect(
-          `${BASE_PATH}?error=` +
-            encodeURIComponent("No se pudo leer el archivo del almacenamiento.")
-        );
-      }
-      const blob = await resp.blob();
-      const bytes = await blob.arrayBuffer();
-      const buffer = Buffer.from(bytes);
-      const fileName = encodeURIComponent(submissionName).replace(/'/g, "%27");
-      const headers = new Headers({
-        "Content-Type": (blob.type || "application/pdf") + "; charset=utf-8",
-        "Content-Length": String(buffer.byteLength),
-        "Content-Disposition":
-          "attachment; filename*=UTF-8''" + fileName,
-        "Cache-Control": "no-store, no-transform",
-      });
-      return new NextResponse(buffer, { status: 200, headers });
-    } catch (err) {
-      redirect(
-        `${BASE_PATH}?error=` +
-          encodeURIComponent("Error al descargar el archivo.")
-      );
-    }
   }
 
   async function saveComment(formData: FormData) {

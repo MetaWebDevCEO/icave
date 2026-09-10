@@ -34,6 +34,14 @@ export function normalizeEmail(value: string | null | undefined) {
   return (value ?? "").trim().toLowerCase();
 }
 
+export const SUBMISSION_PATH_PREFIX = "entregas/";
+
+export function isValidSubmissionPath(path: unknown): path is string {
+  if (typeof path !== "string") return false;
+  const trimmed = path.trim().replace(/^\/+/, "");
+  return trimmed.length > 0 && trimmed.startsWith(SUBMISSION_PATH_PREFIX);
+}
+
 export function parseSubmissionFiles(
   row:
     | {
@@ -54,20 +62,17 @@ export function parseSubmissionFiles(
       for (const it of arr) {
         if (it && typeof it === "object") {
           const obj = it as Record<string, unknown>;
-          const p = typeof obj.path === "string" ? obj.path : "";
+          const rawPath = typeof obj.path === "string" ? obj.path : "";
+          if (!isValidSubmissionPath(rawPath)) continue;
           const n =
             typeof obj.name === "string"
               ? obj.name
-              : typeof obj.path === "string"
-                ? extractFileName(obj.path) ?? "evidencia.pdf"
-                : "evidencia.pdf";
-          if (p) {
-            parsed.push({
-              path: p,
-              name: n,
-              mime: typeof obj.mime === "string" ? obj.mime : undefined,
-            });
-          }
+              : extractFileName(rawPath) ?? "evidencia.pdf";
+          parsed.push({
+            path: rawPath.trim().replace(/^\/+/, ""),
+            name: n,
+            mime: typeof obj.mime === "string" ? obj.mime : undefined,
+          });
         }
       }
       if (parsed.length > 0) return parsed;
@@ -82,12 +87,13 @@ export function parseSubmissionFiles(
     }
   }
 
-  const path =
+  const rawPath =
     (typeof row?.submission_path === "string" && row.submission_path.length > 0
       ? row.submission_path
       : extractLegacyEntregaPath(row?.description)) ?? null;
 
-  if (!path) return [];
+  if (!isValidSubmissionPath(rawPath)) return [];
+  const path = rawPath.trim().replace(/^\/+/, "");
 
   const name =
     (typeof row?.submission_name === "string" && row.submission_name.length > 0

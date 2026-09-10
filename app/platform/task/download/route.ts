@@ -1,6 +1,7 @@
 import { createClient } from "@/utils/supabase/server";
 import {
   createClient as createSupabaseAdminClient,
+  type PostgrestError,
   type SupabaseClient,
 } from "@supabase/supabase-js";
 import { NextRequest, NextResponse } from "next/server";
@@ -9,6 +10,8 @@ import {
   listEvidenceInFolder,
   normalizeEmail,
   parseSubmissionFiles,
+  isValidSubmissionPath,
+  isSchemaMismatchPostgres,
   type SubmissionFile,
 } from "@/lib/submission-files";
 
@@ -16,7 +19,7 @@ export const dynamic = "force-dynamic";
 
 const BASE_PATH = "/platform/task";
 
-const FAVICON_HREF = "/iso%20(2).svg";
+const FAVICON_HREF = "/iso (2).svg";
 const DOC_TITLE = "Promas Download";
 
 function errorHtml(title: string, message: string, backUrl: string) {
@@ -25,7 +28,8 @@ function errorHtml(title: string, message: string, backUrl: string) {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
   const safeBack = String(backUrl);
-  return `<!doctype html><html lang="es"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>${DOC_TITLE}</title><link rel="icon" type="image/svg+xml" href="${FAVICON_HREF}"/><link rel="shortcut icon" type="image/svg+xml" href="${FAVICON_HREF}"/><style>
+  const icon = FAVICON_HREF.replace(/"/g, "&quot;");
+  return `<!doctype html><html lang="es"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>${DOC_TITLE}</title><link rel="icon" type="image/svg+xml" href="${icon}"/><link rel="shortcut icon" type="image/svg+xml" href="${icon}"/><link rel="apple-touch-icon" type="image/svg+xml" href="${icon}"/><style>
     body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#fafafa;color:#18181b;}
     .wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:2rem;}
     .card{max-width:480px;width:100%;background:#fff;border:1px solid #e4e4e7;border-radius:12px;padding:1.75rem 2rem;box-shadow:0 10px 30px rgba(0,0,0,.04);}
@@ -53,7 +57,8 @@ function pdfWrapperHtml(signedUrl: string, fileName: string) {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
-  return `<!doctype html><html lang="es"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>${DOC_TITLE}</title><link rel="icon" type="image/svg+xml" href="${FAVICON_HREF}"/><link rel="shortcut icon" type="image/svg+xml" href="${FAVICON_HREF}"/><style>
+  const icon = FAVICON_HREF.replace(/"/g, "&quot;");
+  return `<!doctype html><html lang="es"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>${DOC_TITLE}</title><link rel="icon" type="image/svg+xml" href="${icon}"/><link rel="shortcut icon" type="image/svg+xml" href="${icon}"/><link rel="apple-touch-icon" type="image/svg+xml" href="${icon}"/><style>
     html,body{margin:0;padding:0;height:100%;width:100%;background:#f4f4f5;}
     iframe{border:0;width:100vw;height:100vh;display:block;}
   </style></head><body><iframe src="${safeUrl}" title="${safeName}"></iframe></body></html>`;
@@ -118,8 +123,12 @@ export async function GET(req: NextRequest) {
         })
       : null;
 
-  const select =
+  const selectExtended =
     "id, revisor_id, assigned_to_email, submission_path, submission_name, submission_mime, submission_files, description";
+  const selectMid =
+    "id, revisor_id, assigned_to_email, submission_path, submission_name, description";
+  const selectBase =
+    "id, revisor_id, assigned_to_email, description";
 
   type Row = {
     revisor_id?: string | null;
@@ -132,30 +141,59 @@ export async function GET(req: NextRequest) {
     assigned_to?: string | null;
   };
 
+  type QueryResult = { data: Row | null; error: PostgrestError | null };
+
+  async function trySelect(client: SupabaseClient, query: string): Promise<QueryResult> {
+    const res = await client
+      .from("asignaciones")
+      .select(query)
+      .eq("id", assignmentId)
+      .maybeSingle();
+    return { data: (res.data ?? null) as Row | null, error: (res.error ?? null) as PostgrestError | null };
+  }
+
   let row: Row | null = null;
   let lastMessage = "No se encontró la asignación.";
 
-  const rowA = await supabase
-    .from("asignaciones")
-    .select(select)
-    .eq("id", assignmentId)
-    .maybeSingle();
+  const rowA = await trySelect(supabase, selectExtended);
   if (rowA.data) {
-    row = rowA.data as Row;
+    row = rowA.data;
   } else if (rowA.error) {
     lastMessage = rowA.error.message;
+    if (isSchemaMismatchPostgres(rowA.error)) {
+      const mid = await trySelect(supabase, selectMid);
+      if (mid.data) {
+        row = mid.data;
+      } else if (mid.error) {
+        lastMessage = mid.error.message;
+        if (isSchemaMismatchPostgres(mid.error)) {
+          const base = await trySelect(supabase, selectBase);
+          if (base.data) row = base.data;
+          else if (base.error) lastMessage = base.error.message;
+        }
+      }
+    }
   }
 
   if (!row && admin) {
-    const rowB = await admin
-      .from("asignaciones")
-      .select(select)
-      .eq("id", assignmentId)
-      .maybeSingle();
+    const rowB = await trySelect(admin, selectExtended);
     if (rowB.data) {
-      row = rowB.data as Row;
+      row = rowB.data;
     } else if (rowB.error) {
       lastMessage = rowB.error.message;
+      if (isSchemaMismatchPostgres(rowB.error)) {
+        const mid = await trySelect(admin, selectMid);
+        if (mid.data) {
+          row = mid.data;
+        } else if (mid.error) {
+          lastMessage = mid.error.message;
+          if (isSchemaMismatchPostgres(mid.error)) {
+            const base = await trySelect(admin, selectBase);
+            if (base.data) row = base.data;
+            else if (base.error) lastMessage = base.error.message;
+          }
+        }
+      }
     }
   }
 
@@ -242,7 +280,7 @@ export async function GET(req: NextRequest) {
   }
 
   const chosen = files[idx] ?? files[0];
-  if (!chosen) {
+  if (!chosen || !isValidSubmissionPath(chosen.path)) {
     return new NextResponse(
       errorHtml(
         "No hay archivo adjunto",
@@ -302,6 +340,11 @@ export async function GET(req: NextRequest) {
   }
 
   const fileName = fallbackResolvedName ?? chosen.name;
+  const disposition =
+    String(req.nextUrl.searchParams.get("disposition") ?? "inline")
+      .toLowerCase() === "attachment"
+      ? "attachment"
+      : "inline";
 
   try {
     const resp = await fetch(signedUrl, { cache: "no-store" });
@@ -315,13 +358,23 @@ export async function GET(req: NextRequest) {
         { status: 502, headers: { "Content-Type": "text/html; charset=utf-8" } }
       );
     }
-    return new NextResponse(pdfWrapperHtml(signedUrl, fileName), {
-      status: 200,
-      headers: {
-        "Content-Type": "text/html; charset=utf-8",
-        "Cache-Control": "no-store, no-transform",
-      },
+    const blob = await resp.blob();
+    const bytes = await blob.arrayBuffer();
+    const buffer = Buffer.from(bytes);
+    const encodedName = encodeURIComponent(fileName).replace(/'/g, "%27");
+    const finalMime =
+      chosen.mime && chosen.mime.trim().length > 0
+        ? chosen.mime
+        : (blob.type || "application/pdf");
+    const headers = new Headers({
+      "Content-Type": finalMime + "; charset=utf-8",
+      "Content-Length": String(buffer.byteLength),
+      "Content-Disposition":
+        `${disposition}; filename="${encodedName}"; filename*=UTF-8''${encodedName}`,
+      "Cache-Control": "no-store, no-transform",
+      "X-Content-Type-Options": "nosniff",
     });
+    return new NextResponse(buffer, { status: 200, headers });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Error inesperado al descargar.";
     return new NextResponse(

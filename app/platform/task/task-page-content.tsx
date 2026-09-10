@@ -21,13 +21,14 @@ type Props = {
   messageParam?: string;
   assignments: TaskRowWithRevisor[];
   basePath: string;
-  onSubmit: (formData: FormData) => any;
+  onSubmit: (formData: FormData) => Promise<void>;
   downloadBasePath: string;
   onSaveComment: (formData: FormData) => Promise<void>;
   onDelete: (formData: FormData) => Promise<void>;
 };
 
-function filterClass(statusFilter: string, key: string, _value: string) {
+function filterClass(statusFilter: string, key: string, value: string) {
+  void value;
   const active =
     key === "all"
       ? !statusFilter || statusFilter === "all"

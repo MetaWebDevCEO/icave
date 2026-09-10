@@ -1,121 +1,25 @@
 import { createClient } from "@/utils/supabase/server";
 import {
   createClient as createSupabaseAdminClient,
+  type PostgrestError,
   type SupabaseClient,
 } from "@supabase/supabase-js";
 import { NextRequest, NextResponse } from "next/server";
 import { resolveRoleForUser } from "@/lib/platform-roles";
+import {
+  listEvidenceInFolder,
+  normalizeEmail,
+  parseSubmissionFiles,
+  isValidSubmissionPath,
+  isSchemaMismatchPostgres,
+  type SubmissionFile,
+} from "@/lib/submission-files";
 
 export const dynamic = "force-dynamic";
 
 const BASE_PATH = "/platform/revisor/task";
 
-function normalizeEmail(value: string | null | undefined) {
-  return (value ?? "").trim().toLowerCase();
-}
-
-function extractFileName(p: string | null | undefined): string {
-  if (!p) return "";
-  const lastSlash = p.lastIndexOf("/");
-  return lastSlash >= 0 ? p.slice(lastSlash + 1) : p;
-}
-
-function resolveSubmissionName(
-  submissionName: string | null | undefined,
-  submissionPath: string | null | undefined,
-  fallback: string
-) {
-  const trimmed = submissionName?.trim() ?? "";
-  if (trimmed.length > 0 && trimmed.toLowerCase() !== "entrega.pdf") {
-    return trimmed;
-  }
-  const fromPath = extractFileName(submissionPath);
-  if (fromPath.length > 0) return fromPath;
-  return fallback;
-}
-
-function extractEntregaPathFromDescription(
-  description: string | null | undefined
-) {
-  if (!description) return null;
-  const marker = "[Entrega]";
-  const start = description.indexOf(marker);
-  if (start === -1) return null;
-  const tail = description.slice(start + marker.length);
-  const line = tail
-    .split(/\r?\n/)
-    .map((s) => s.trim())
-    .find(Boolean);
-  if (!line) return null;
-  const cleaned = line
-    .replace(
-      /^[A-Za-z0-9_\- /:.()+\u00C0-\u024F]+(?:\.(?:pdf|PDF))/,
-      (m) => m
-    )
-    .trim();
-  return cleaned.length > 0 ? cleaned : null;
-}
-
-type FoundFile = { path: string; name: string };
-
-async function findSubmissionInStorage(
-  client: SupabaseClient,
-  ownerUserId: string | null | undefined,
-  assignmentId: string
-): Promise<FoundFile | null> {
-  if (ownerUserId) {
-    const folder = `entregas/${ownerUserId}/${assignmentId}`;
-    const { data, error } = await client.storage
-      .from("asignaciones")
-      .list(folder, { limit: 20, offset: 0 });
-    if (!error && data && data.length > 0) {
-      const exact = data.find(
-        (file) => file.name.toLowerCase() === "entrega.pdf"
-      );
-      const pdf =
-        exact ?? data.find((file) => file.name.toLowerCase().endsWith(".pdf"));
-      if (pdf) {
-        return {
-          path: `${folder}/${pdf.name}`,
-          name: pdf.name,
-        };
-      }
-    }
-  }
-
-  // Fallback: scan all entregas/<user>/<assignmentId>
-  try {
-    const { data: root } = await client.storage
-      .from("asignaciones")
-      .list("entregas", { limit: 500, offset: 0 });
-    if (!root || root.length === 0) return null;
-    for (const userFolder of root) {
-      if (!userFolder || userFolder.id) continue;
-      const folder = `entregas/${userFolder.name}/${assignmentId}`;
-      const { data: files } = await client.storage
-        .from("asignaciones")
-        .list(folder, { limit: 20, offset: 0 });
-      if (!files || files.length === 0) continue;
-      const exact = files.find(
-        (file) => file.name.toLowerCase() === "entrega.pdf"
-      );
-      const pdf =
-        exact ??
-        files.find((file) => file.name.toLowerCase().endsWith(".pdf"));
-      if (pdf) {
-        return {
-          path: `${folder}/${pdf.name}`,
-          name: pdf.name,
-        };
-      }
-    }
-  } catch {
-    return null;
-  }
-  return null;
-}
-
-const FAVICON_HREF = "/iso%20(2).svg";
+const FAVICON_HREF = "/iso (2).svg";
 const DOC_TITLE = "Promas Download";
 
 function errorHtml(title: string, message: string, backUrl: string) {
@@ -124,7 +28,8 @@ function errorHtml(title: string, message: string, backUrl: string) {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
   const safeBack = String(backUrl);
-  return `<!doctype html><html lang="es"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>${DOC_TITLE}</title><link rel="icon" type="image/svg+xml" href="${FAVICON_HREF}"/><link rel="shortcut icon" type="image/svg+xml" href="${FAVICON_HREF}"/><style>
+  const icon = FAVICON_HREF.replace(/"/g, "&quot;");
+  return `<!doctype html><html lang="es"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>${DOC_TITLE}</title><link rel="icon" type="image/svg+xml" href="${icon}"/><link rel="shortcut icon" type="image/svg+xml" href="${icon}"/><link rel="apple-touch-icon" type="image/svg+xml" href="${icon}"/><style>
     body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#fafafa;color:#18181b;}
     .wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:2rem;}
     .card{max-width:480px;width:100%;background:#fff;border:1px solid #e4e4e7;border-radius:12px;padding:1.75rem 2rem;box-shadow:0 10px 30px rgba(0,0,0,.04);}
@@ -152,7 +57,8 @@ function pdfWrapperHtml(signedUrl: string, fileName: string) {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
-  return `<!doctype html><html lang="es"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>${DOC_TITLE}</title><link rel="icon" type="image/svg+xml" href="${FAVICON_HREF}"/><link rel="shortcut icon" type="image/svg+xml" href="${FAVICON_HREF}"/><style>
+  const icon = FAVICON_HREF.replace(/"/g, "&quot;");
+  return `<!doctype html><html lang="es"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>${DOC_TITLE}</title><link rel="icon" type="image/svg+xml" href="${icon}"/><link rel="shortcut icon" type="image/svg+xml" href="${icon}"/><link rel="apple-touch-icon" type="image/svg+xml" href="${icon}"/><style>
     html,body{margin:0;padding:0;height:100%;width:100%;background:#f4f4f5;}
     iframe{border:0;width:100vw;height:100vh;display:block;}
   </style></head><body><iframe src="${safeUrl}" title="${safeName}"></iframe></body></html>`;
@@ -185,6 +91,9 @@ export async function GET(req: NextRequest) {
   const assignmentId = String(
     req.nextUrl.searchParams.get("assignment_id") ?? ""
   ).trim();
+  const idxRaw = req.nextUrl.searchParams.get("idx");
+  const idx = Number.isInteger(Number(idxRaw)) ? Math.max(0, Number(idxRaw)) : 0;
+
   if (!assignmentId) {
     return new NextResponse(
       errorHtml(
@@ -214,41 +123,76 @@ export async function GET(req: NextRequest) {
         })
       : null;
 
-  const select =
+  const selectExtended =
+    "id, revisor_id, assigned_to_email, submission_path, submission_name, submission_mime, submission_files, description";
+  const selectMid =
     "id, revisor_id, assigned_to_email, submission_path, submission_name, description";
+  const selectBase =
+    "id, revisor_id, assigned_to_email, description";
 
   type Row = {
     revisor_id?: string | null;
     assigned_to_email?: string | null;
     submission_path?: string | null;
     submission_name?: string | null;
+    submission_mime?: string | null;
+    submission_files?: unknown;
     description?: string | null;
   };
+
+  type QueryResult = { data: Row | null; error: PostgrestError | null };
+
+  async function trySelect(client: SupabaseClient, query: string): Promise<QueryResult> {
+    const res = await client
+      .from("asignaciones")
+      .select(query)
+      .eq("id", assignmentId)
+      .maybeSingle();
+    return { data: (res.data ?? null) as Row | null, error: (res.error ?? null) as PostgrestError | null };
+  }
 
   let row: Row | null = null;
   let lastMessage = "No se encontró la asignación.";
 
-  const rowA = await supabase
-    .from("asignaciones")
-    .select(select)
-    .eq("id", assignmentId)
-    .maybeSingle();
+  const rowA = await trySelect(supabase, selectExtended);
   if (rowA.data) {
-    row = rowA.data as Row;
+    row = rowA.data;
   } else if (rowA.error) {
     lastMessage = rowA.error.message;
+    if (isSchemaMismatchPostgres(rowA.error)) {
+      const mid = await trySelect(supabase, selectMid);
+      if (mid.data) {
+        row = mid.data;
+      } else if (mid.error) {
+        lastMessage = mid.error.message;
+        if (isSchemaMismatchPostgres(mid.error)) {
+          const base = await trySelect(supabase, selectBase);
+          if (base.data) row = base.data;
+          else if (base.error) lastMessage = base.error.message;
+        }
+      }
+    }
   }
 
   if (!row && admin) {
-    const rowB = await admin
-      .from("asignaciones")
-      .select(select)
-      .eq("id", assignmentId)
-      .maybeSingle();
+    const rowB = await trySelect(admin, selectExtended);
     if (rowB.data) {
-      row = rowB.data as Row;
+      row = rowB.data;
     } else if (rowB.error) {
       lastMessage = rowB.error.message;
+      if (isSchemaMismatchPostgres(rowB.error)) {
+        const mid = await trySelect(admin, selectMid);
+        if (mid.data) {
+          row = mid.data;
+        } else if (mid.error) {
+          lastMessage = mid.error.message;
+          if (isSchemaMismatchPostgres(mid.error)) {
+            const base = await trySelect(admin, selectBase);
+            if (base.data) row = base.data;
+            else if (base.error) lastMessage = base.error.message;
+          }
+        }
+      }
     }
   }
 
@@ -259,43 +203,83 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  let path = row.submission_path ?? extractEntregaPathFromDescription(row.description);
+  let files: SubmissionFile[] = parseSubmissionFiles(row);
   let fallbackResolvedName: string | undefined;
 
-  if (!path) {
+  if (files.length === 0) {
     let ownerUserId: string | null | undefined = undefined;
     if (admin && row.assigned_to_email) {
-      const { data: profiles } = await admin
-        .from("user_roles")
-        .select("user_id")
-        .limit(1000);
-      if (profiles && profiles.length > 0) {
-        const emails = await Promise.all(
-          profiles.map(async (p) => {
-            const u = await admin.auth.admin.getUserById((p as any).user_id).catch(() => null);
-            if (u?.data?.user?.email && normalizeEmail(u.data.user.email) === normalizeEmail(row!.assigned_to_email)) {
-              return (p as any).user_id as string;
-            }
-            return null;
-          })
-        );
-        ownerUserId = emails.find((x) => x) ?? undefined;
+      try {
+        const profiles = (
+          await admin.from("user_roles").select("user_id").limit(1000)
+        ).data;
+        if (profiles && profiles.length > 0) {
+          const emails = await Promise.all(
+            profiles.map(async (p) => {
+              const u = await admin.auth.admin
+                .getUserById((p as { user_id: string }).user_id)
+                .catch(() => null);
+              if (
+                u?.data?.user?.email &&
+                normalizeEmail(u.data.user.email) ===
+                  normalizeEmail(row!.assigned_to_email)
+              ) {
+                return (p as { user_id: string }).user_id;
+              }
+              return null;
+            })
+          );
+          ownerUserId = emails.find((x) => x) ?? undefined;
+        }
+      } catch {
+        /* fallthrough: storage search con fallback amplio */
       }
     }
 
     const storageClient = (admin ?? supabase) as SupabaseClient;
-    const found = await findSubmissionInStorage(
-      storageClient,
-      ownerUserId,
-      assignmentId
-    );
-    if (found) {
-      path = found.path;
-      fallbackResolvedName = found.name;
+    const fallbackList: SubmissionFile[] = [];
+    const tryFolder = async (uid: string) => {
+      const f = await listEvidenceInFolder(
+        storageClient,
+        "asignaciones",
+        `entregas/${uid}/${assignmentId}`
+      );
+      if (f.length > 0) return f;
+      return null;
+    };
+    if (ownerUserId) {
+      const r = await tryFolder(ownerUserId);
+      if (r) fallbackList.push(...r);
+    }
+    if (fallbackList.length === 0) {
+      try {
+        const root = (
+          await storageClient.storage
+            .from("asignaciones")
+            .list("entregas", { limit: 500, offset: 0 })
+        ).data;
+        if (root && root.length > 0) {
+          for (const folder of root) {
+            if (folder.id) continue;
+            const r = await tryFolder(folder.name);
+            if (r) {
+              fallbackList.push(...r);
+              break;
+            }
+          }
+        }
+      } catch {
+        /* fallback empty */
+      }
+    }
+    files = fallbackList;
+    if (files.length > 0 && !files[idx]) {
+      fallbackResolvedName = files[0].name;
     }
   }
 
-  if (!path) {
+  const chosen = files[idx] ?? files[0];
+  if (!chosen || !isValidSubmissionPath(chosen.path)) {
     return new NextResponse(
       errorHtml(
         "No hay archivo adjunto",
@@ -306,13 +290,15 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  const canAccess = role === "revisor";
+  const canAccess =
+    role === "revisor" &&
+    (row.revisor_id ? row.revisor_id === user.id : true);
 
   if (!canAccess) {
     return new NextResponse(
       errorHtml(
         "Sin permisos",
-        "Solo los revisores pueden acceder a esta sección.",
+        "Solo puedes descargar las asignaciones que tú revisas.",
         fallbackUrl
       ),
       { status: 403, headers: { "Content-Type": "text/html; charset=utf-8" } }
@@ -325,7 +311,7 @@ export async function GET(req: NextRequest) {
 
   const signedA = await supabase.storage
     .from("asignaciones")
-    .createSignedUrl(path, ttlSeconds);
+    .createSignedUrl(chosen.path, ttlSeconds);
   if (signedA.data?.signedUrl) {
     signedUrl = signedA.data.signedUrl;
   } else if (signedA.error) {
@@ -335,7 +321,7 @@ export async function GET(req: NextRequest) {
   if (!signedUrl && admin) {
     const signedB = await admin.storage
       .from("asignaciones")
-      .createSignedUrl(path, ttlSeconds);
+      .createSignedUrl(chosen.path, ttlSeconds);
     if (signedB.data?.signedUrl) {
       signedUrl = signedB.data.signedUrl;
     } else if (signedB.error) {
@@ -350,13 +336,12 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  const fileName = fallbackResolvedName
-    ? fallbackResolvedName
-    : resolveSubmissionName(
-        row.submission_name,
-        path,
-        "entrega.pdf"
-      );
+  const fileName = fallbackResolvedName ?? chosen.name;
+  const disposition =
+    String(req.nextUrl.searchParams.get("disposition") ?? "inline")
+      .toLowerCase() === "attachment"
+      ? "attachment"
+      : "inline";
 
   try {
     const resp = await fetch(signedUrl, { cache: "no-store" });
@@ -370,13 +355,25 @@ export async function GET(req: NextRequest) {
         { status: 502, headers: { "Content-Type": "text/html; charset=utf-8" } }
       );
     }
-    return new NextResponse(pdfWrapperHtml(signedUrl, fileName), {
-      status: 200,
-      headers: {
-        "Content-Type": "text/html; charset=utf-8",
-        "Cache-Control": "no-store, no-transform",
-      },
+    const blob = await resp.blob();
+    const bytes = await blob.arrayBuffer();
+    const buffer = Buffer.from(bytes);
+    const encodedName = encodeURIComponent(fileName).replace(/'/g, "%27");
+    const chosenMime =
+      chosen.mime && chosen.mime.trim().length > 0
+        ? chosen.mime
+        : (row.submission_mime?.trim?.() ?? "");
+    const finalMime =
+      chosenMime.length > 0 ? chosenMime : (blob.type || "application/pdf");
+    const headers = new Headers({
+      "Content-Type": finalMime + "; charset=utf-8",
+      "Content-Length": String(buffer.byteLength),
+      "Content-Disposition":
+        `${disposition}; filename="${encodedName}"; filename*=UTF-8''${encodedName}`,
+      "Cache-Control": "no-store, no-transform",
+      "X-Content-Type-Options": "nosniff",
     });
+    return new NextResponse(buffer, { status: 200, headers });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Error inesperado al descargar.";
     return new NextResponse(

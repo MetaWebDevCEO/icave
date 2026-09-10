@@ -81,12 +81,6 @@ function getDueTone(value: string | null | undefined, status: string | null | un
   return "text-zinc-700 dark:text-zinc-200";
 }
 
-function extractEntregaPathFromDescription(description: string | null | undefined) {
-  if (!description) return null;
-  const match = /^\s*entrega:\s*(\S+)\s*$/im.exec(description);
-  return match?.[1] ?? null;
-}
-
 function extractEntregaMeta(description: string | null | undefined) {
   const text = description ?? "";
   const path = /^\s*entrega:\s*(\S+)\s*$/im.exec(text)?.[1] ?? null;
@@ -135,14 +129,13 @@ export function TaskBoard({
   role: UserRole;
   currentUserId: string;
   tasks: TaskRow[];
-  onSubmit: (formData: FormData) => any;
+  onSubmit: (formData: FormData) => Promise<void>;
   downloadBasePath: string;
   onSaveComment: (formData: FormData) => Promise<void>;
   onDelete: (formData: FormData) => Promise<void>;
 }) {
   const [openId, setOpenId] = useState<string | null>(null);
   const [submissionSizeError, setSubmissionSizeError] = useState<string | null>(null);
-  const [selectedFileNames, setSelectedFileNames] = useState<string[]>([]);
 
   const selected = useMemo(() => {
     if (!openId) return null;
@@ -167,7 +160,6 @@ export function TaskBoard({
 
   const resetModalState = () => {
     setSubmissionSizeError(null);
-    setSelectedFileNames([]);
   };
 
   return (
@@ -375,12 +367,9 @@ export function TaskBoard({
                   {deliveryFiles.length > 0 && (
                     <div className="mt-3 grid gap-2">
                       {deliveryFiles.map((f, idx) => (
-                        <a
+                        <div
                           key={`${f.path}-${idx}`}
-                          href={`${downloadBasePath}?assignment_id=${encodeURIComponent(selected!.id)}&idx=${encodeURIComponent(String(idx))}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center justify-between gap-3 rounded-md border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm hover:bg-zinc-100 dark:border-zinc-800 dark:bg-zinc-900/40 dark:hover:bg-zinc-900"
+                          className="flex items-center justify-between gap-3 rounded-md border border-zinc-200 bg-zinc-50 px-4 py-3 dark:border-zinc-800 dark:bg-zinc-900/40"
                         >
                           <div className="flex min-w-0 items-center gap-3">
                             <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-200 dark:bg-emerald-950/30 dark:text-emerald-300 dark:ring-emerald-900">
@@ -399,10 +388,23 @@ export function TaskBoard({
                               </div>
                             </div>
                           </div>
-                          <div className="shrink-0 text-xs font-medium text-zinc-700 dark:text-zinc-300">
-                            Ver
+                          <div className="flex shrink-0 items-center gap-2">
+                            <a
+                              href={`${downloadBasePath}?assignment_id=${encodeURIComponent(selected!.id)}&idx=${encodeURIComponent(String(idx))}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex h-8 items-center rounded-md border border-zinc-200 bg-white px-3 text-xs font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                            >
+                              Ver
+                            </a>
+                            <a
+                              href={`${downloadBasePath}?assignment_id=${encodeURIComponent(selected!.id)}&idx=${encodeURIComponent(String(idx))}&disposition=attachment`}
+                              className="inline-flex h-8 items-center rounded-md bg-zinc-900 px-3 text-xs font-medium text-white hover:bg-zinc-700 dark:bg-zinc-50 dark:text-zinc-950 dark:hover:bg-zinc-200"
+                            >
+                              Descargar
+                            </a>
                           </div>
-                        </a>
+                        </div>
                       ))}
                     </div>
                   )}
@@ -467,7 +469,6 @@ export function TaskBoard({
                             setSubmissionSizeError(
                               `Solo se permiten hasta ${MAX_EVIDENCE_FILES} archivos por entrega. Selecciona menos archivos.`
                             );
-                            setSelectedFileNames([]);
                             return;
                           }
                           const tooBig = files.find(
@@ -477,11 +478,9 @@ export function TaskBoard({
                             setSubmissionSizeError(
                               `El archivo ${tooBig.name} supera los 10,000 KB (10 MB). Reduce su tamaño.`
                             );
-                            setSelectedFileNames([]);
                             return;
                           }
                           setSubmissionSizeError(null);
-                          setSelectedFileNames(files.map((f) => f.name));
                         }}
                         className="block w-full text-sm text-zinc-700 file:mr-4 file:rounded-md file:border file:border-zinc-200 file:bg-white file:px-3 file:py-2 file:text-sm file:font-medium file:text-zinc-900 hover:file:bg-zinc-100 dark:text-zinc-300 dark:file:border-zinc-800 dark:file:bg-black dark:file:text-zinc-100 dark:hover:file:bg-zinc-900"
                       />
@@ -489,47 +488,6 @@ export function TaskBoard({
                         Formato permitido: PDF. Hasta {MAX_EVIDENCE_FILES}{" "}
                         archivos. 10,000 KB (10 MB) máximo por archivo.
                       </div>
-                      {selectedFileNames.length > 0 && !submissionSizeError && (
-                        <div className="mt-1 grid gap-1.5">
-                          <div className="text-xs font-medium text-zinc-700 dark:text-zinc-300">
-                            Archivos seleccionados ({selectedFileNames.length}):
-                          </div>
-                          <div className="grid gap-1">
-                            {selectedFileNames.map((name, i) => (
-                              <div
-                                key={`${name}-${i}`}
-                                className="inline-flex items-center gap-2 rounded-md border border-zinc-200 bg-white px-3 py-2 text-xs dark:border-zinc-800 dark:bg-black"
-                              >
-                                <svg
-                                  viewBox="0 0 24 24"
-                                  fill="none"
-                                  xmlns="http://www.w3.org/2000/svg"
-                                  aria-hidden="true"
-                                  className="h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-400"
-                                >
-                                  <path
-                                    d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6Z"
-                                    stroke="currentColor"
-                                    strokeWidth="2"
-                                    strokeLinecap="round"
-                                    strokeLinejoin="round"
-                                  />
-                                  <path
-                                    d="M14 2v6h6"
-                                    stroke="currentColor"
-                                    strokeWidth="2"
-                                    strokeLinecap="round"
-                                    strokeLinejoin="round"
-                                  />
-                                </svg>
-                                <span className="truncate text-zinc-800 dark:text-zinc-200">
-                                  {name}
-                                </span>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
                       {submissionSizeError && (
                         <div className="text-xs font-medium text-red-700 dark:text-red-300">
                           {submissionSizeError}
