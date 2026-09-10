@@ -3,7 +3,7 @@ import { createClient } from "@/utils/supabase/server";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createClient as createSupabaseAdminClient } from "@supabase/supabase-js";
-import type { PostgrestError } from "@supabase/supabase-js";
+import type { PostgrestError, SupabaseClient } from "@supabase/supabase-js";
 import {
   resolveRoleForUser,
   buildSections,
@@ -11,6 +11,13 @@ import {
 } from "@/lib/platform-roles";
 import { DeleteAssignmentForm } from "./delete-assignment-form";
 import { formatCalendarDateShort } from "@/lib/calendar-date";
+import {
+  parseSubmissionFiles,
+  isValidSubmissionPath,
+  listEvidenceInFolder,
+  normalizeEmail as normalizeEmailUtil,
+  type SubmissionFile,
+} from "@/lib/submission-files";
 
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 
@@ -28,6 +35,14 @@ type AssignmentRow = {
   attachment_name?: string | null;
   attachment_mime?: string | null;
   attachment_path?: string | null;
+  submission_files?: unknown;
+  submission_path?: string | null;
+  submission_name?: string | null;
+  submission_mime?: string | null;
+  submitted_at?: string | null;
+  submitted_by_email?: string | null;
+  reviewer_comment?: string | null;
+  reviewer_comment_at?: string | null;
 };
 
 function getSearchParam(
@@ -116,7 +131,159 @@ function statusBadgeClasses(status: string | null | undefined) {
   return "bg-zinc-100 text-zinc-700 dark:bg-zinc-900 dark:text-zinc-300";
 }
 
+function isCompleted(status: string | null | undefined) {
+  const normalized = (status ?? "").trim().toLowerCase();
+  return normalized.includes("comp") || normalized.includes("done");
+}
+
+function formatShortDate(iso: string | null | undefined) {
+  if (!iso) return null;
+  try {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return null;
+    const day = String(d.getDate()).padStart(2, "0");
+    const month = String(d.getMonth() + 1).padStart(2, "0");
+    const year = d.getFullYear();
+    const hh = String(d.getHours()).padStart(2, "0");
+    const mm = String(d.getMinutes()).padStart(2, "0");
+    return `${day}/${month}/${year} ${hh}:${mm}`;
+  } catch {
+    return null;
+  }
+}
+
+const DOWNLOAD_BASE_PATH = "/platform/revisor/task/download";
+
 const MAX_ATTACHMENT_SIZE_BYTES = 10_000 * 1024;
+
+function normalizeEmail(value: string | null | undefined) {
+  return normalizeEmailUtil(value);
+}
+
+function isSchemaMismatch(err: PostgrestError | null) {
+  if (!err) return false;
+  const code = (err as unknown as { code?: string } | null)?.code ?? "";
+  const msg = (err.message ?? "").toLowerCase();
+  return (
+    code === "PGRST204" ||
+    msg.includes("schema cache") ||
+    msg.includes("could not find") ||
+    msg.includes("does not exist") ||
+    msg.includes("column")
+  );
+}
+
+function upsertEntregaIntoDescription(
+  description: string | null | undefined,
+  objectPath: string,
+  submittedByEmail: string,
+  submittedAtISO: string
+) {
+  const input = String(description ?? "").trimEnd();
+  const lines = input.length > 0 ? input.split(/\r?\n/) : [];
+  const filtered = lines.filter((line) => {
+    const normalized = line.trim().toLowerCase();
+    if (normalized.startsWith("entrega:")) return false;
+    if (normalized.startsWith("entregado por:")) return false;
+    if (normalized.startsWith("entregado el:")) return false;
+    return true;
+  });
+
+  const base = filtered.join("\n").trimEnd();
+  const meta = [
+    "Entrega: " + objectPath,
+    "Entregado por: " + submittedByEmail,
+    "Entregado el: " + submittedAtISO,
+  ].join("\n");
+
+  return base ? `${base}\n\n${meta}` : meta;
+}
+
+async function findSubmissionInStorage(
+  client: SupabaseClient,
+  ownerUserId: string,
+  assignmentId: string
+): Promise<SubmissionFile[] | null> {
+  const files = await listEvidenceInFolder(
+    client,
+    "asignaciones",
+    `entregas/${ownerUserId}/${assignmentId}`
+  );
+  if (files.length === 0) return null;
+  return files;
+}
+
+async function bestEffortSyncSubmission(
+  supabase: SupabaseClient,
+  admin: SupabaseClient | null,
+  assignmentId: string,
+  description: string | null | undefined,
+  files: SubmissionFile[],
+  submittedByEmail?: string | null,
+  submittedAtISO?: string | null
+) {
+  const validFiles = files.filter((f) => isValidSubmissionPath(f.path));
+  if (validFiles.length === 0) {
+    return null;
+  }
+  const syncedAt = submittedAtISO ?? new Date().toISOString();
+  const primary = validFiles[0];
+  const primaryPath = primary.path.trim().replace(/^\/+/, "");
+  const mergedDescription = upsertEntregaIntoDescription(
+    description,
+    primaryPath,
+    submittedByEmail ?? "supervisor",
+    syncedAt
+  );
+  const filesJson = validFiles.map((f) => ({
+    path: f.path.trim().replace(/^\/+/, ""),
+    name: f.name,
+    mime: f.mime ?? "application/pdf",
+  }));
+
+  const fullPayload: Record<string, unknown> = {
+    status: "Completada",
+    description: mergedDescription,
+    submission_path: primaryPath,
+    submission_name: primary.name,
+    submission_mime: primary.mime ?? "application/pdf",
+    submission_files: filesJson,
+    submitted_at: syncedAt,
+    submitted_by_email: submittedByEmail ?? null,
+  };
+
+  const midPayload: Record<string, unknown> = {
+    status: "Completada",
+    description: mergedDescription,
+    submission_path: primaryPath,
+    submission_files: filesJson,
+    submitted_at: syncedAt,
+    submitted_by_email: submittedByEmail ?? null,
+  };
+
+  const fallbackPayload: Record<string, unknown> = {
+    status: "Completada",
+    description: mergedDescription,
+  };
+
+  const tryPayload = async (payload: Record<string, unknown>) => {
+    const first = await supabase.from("asignaciones").update(payload).eq("id", assignmentId);
+    if (!first.error) return null;
+    if (!admin) return first.error;
+    const second = await admin.from("asignaciones").update(payload).eq("id", assignmentId);
+    return second.error;
+  };
+
+  let error = await tryPayload(fullPayload);
+  if (isSchemaMismatch(error)) {
+    error = await tryPayload(midPayload);
+  }
+  if (isSchemaMismatch(error)) {
+    error = await tryPayload(fallbackPayload);
+  }
+
+  return error;
+}
 
 export default async function AsignacionRevisorPage({
   searchParams,
@@ -559,11 +726,122 @@ export default async function AsignacionRevisorPage({
     label: email,
   }));
 
-  function normalizeEmail(value: string | null | undefined) {
-    return (value ?? "").trim().toLowerCase();
+  const allRows = (listData ?? []) as AssignmentRow[];
+  const needsStorageLookup = allRows.some(
+    (row) => parseSubmissionFiles(row).length === 0
+  );
+
+  let listDataSynced = allRows;
+  if (needsStorageLookup && admin) {
+    const storageClient = admin;
+    let assignedUserIdByEmail = new Map<string, string>();
+    try {
+      const listed = await admin.auth.admin.listUsers({ page: 1, perPage: 200 });
+      assignedUserIdByEmail = new Map(
+        (listed.data?.users ?? [])
+          .map((candidate) => [normalizeEmail(candidate.email), candidate.id] as const)
+          .filter(([email]) => email.length > 0)
+      );
+    } catch {
+      /* sin listUsers: usamos fallback de escaneo completo */
+    }
+
+    listDataSynced = await Promise.all(
+      allRows.map(async (row) => {
+        if (parseSubmissionFiles(row).length > 0) return row;
+
+        let found: SubmissionFile[] | null = null;
+
+        const ownerUserId = assignedUserIdByEmail.get(normalizeEmail(row.assigned_to_email));
+        if (ownerUserId) {
+          found = await findSubmissionInStorage(storageClient, ownerUserId, row.id);
+        }
+
+        if (!found) {
+          try {
+            const root = await storageClient.storage
+              .from("asignaciones")
+              .list("entregas", { limit: 500, offset: 0 });
+            if (root.data && root.data.length > 0) {
+              for (const folder of root.data) {
+                if (folder.id) continue;
+                const candidate = await findSubmissionInStorage(
+                  storageClient,
+                  folder.name,
+                  row.id
+                );
+                if (candidate && candidate.length > 0) {
+                  found = candidate;
+                  break;
+                }
+              }
+            }
+          } catch {
+            /* sin listado root: no hay fallback */
+          }
+        }
+
+        if (!found || found.length === 0) return row;
+
+        const filesArr = found.filter((f) => isValidSubmissionPath(f.path));
+        if (filesArr.length === 0) return row;
+        const primaryPath = filesArr[0].path.trim().replace(/^\/+/, "");
+        const primaryName = filesArr[0].name;
+        const primaryMime = filesArr[0].mime ?? "application/pdf";
+        const filesJson = filesArr.map((f) => ({
+          path: f.path.trim().replace(/^\/+/, ""),
+          name: f.name,
+          mime: f.mime ?? "application/pdf",
+        }));
+        const statusWas = (row.status ?? "").trim();
+        const statusIsOpen =
+          statusWas.length === 0 ||
+          statusWas.toLowerCase().includes("pend") ||
+          statusWas.toLowerCase().includes("espera") ||
+          statusWas.toLowerCase().includes("curso") ||
+          statusWas.toLowerCase().includes("progreso") ||
+          statusWas.toLowerCase().includes("nueva") ||
+          statusWas.toLowerCase().includes("nuevo") ||
+          statusWas.toLowerCase().includes("open") ||
+          statusWas.toLowerCase().includes("todo");
+
+        const syncError = await bestEffortSyncSubmission(
+          supabase,
+          admin,
+          row.id,
+          row.description,
+          filesArr,
+          row.submitted_by_email ?? normalizeEmail(row.assigned_to_email),
+          row.submitted_at
+        );
+
+        return {
+          ...row,
+          status:
+            syncError
+              ? row.status
+              : statusIsOpen
+                ? "Completada"
+                : row.status,
+          submission_path: primaryPath,
+          submission_name: row.submission_name ?? primaryName,
+          submission_mime: row.submission_mime ?? primaryMime,
+          submission_files: row.submission_files ?? filesJson,
+          submitted_by_email:
+            row.submitted_by_email ?? normalizeEmail(row.assigned_to_email) ?? null,
+          submitted_at: row.submitted_at ?? new Date().toISOString(),
+          description: upsertEntregaIntoDescription(
+            row.description,
+            primaryPath,
+            (row.submitted_by_email ?? normalizeEmail(row.assigned_to_email)) || "supervisor",
+            row.submitted_at ?? new Date().toISOString()
+          ),
+        };
+      })
+    );
   }
 
-  const allAssignments = (listData ?? []) as AssignmentRow[];
+  const allAssignments = listDataSynced;
   const assignments = allAssignments.filter((row) => {
     const status = (row.status ?? "").trim().toLowerCase();
     const passStatus =
@@ -1016,67 +1294,145 @@ export default async function AsignacionRevisorPage({
                     extractAssignedEmail(a.description) ??
                     a.assigned_to_user_id ??
                     null;
+                  const deliveryFiles: SubmissionFile[] = parseSubmissionFiles(a);
+                  const hasDelivery = deliveryFiles.length > 0;
+                  const submittedAtLabel = a.submitted_at ?? null;
+                  const submittedByLabel = a.submitted_by_email ?? null;
 
                   return (
                     <div
                       key={a.id}
                       className="overflow-hidden rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950"
                     >
-                      <div className="flex items-start justify-between gap-4 px-5 py-4">
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-2">
-                            <div className="truncate text-sm font-medium text-zinc-950 dark:text-zinc-50">
-                              {a.title ?? "Sin título"}
-                            </div>
-                            <span
-                              className={[
-                                "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium",
-                                statusBadgeClasses(a.status),
-                              ].join(" ")}
-                            >
-                              {a.status ?? "—"}
-                            </span>
-                            {a.priority && (
-                              <span className="inline-flex items-center rounded-full bg-white/0 px-2 py-0.5 text-xs font-medium text-zinc-600 dark:text-zinc-300">
-                                {a.priority}
+                      <div className="px-5 py-4">
+                        <div className="flex items-start justify-between gap-4">
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                              <div className="truncate text-sm font-medium text-zinc-950 dark:text-zinc-50">
+                                {a.title ?? "Sin título"}
+                              </div>
+                              <span
+                                className={[
+                                  "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium",
+                                  statusBadgeClasses(a.status),
+                                ].join(" ")}
+                              >
+                                {a.status ?? "—"}
                               </span>
+                              {a.priority && (
+                                <span className="inline-flex items-center rounded-full bg-white/0 px-2 py-0.5 text-xs font-medium text-zinc-600 dark:text-zinc-300">
+                                  {a.priority}
+                                </span>
+                              )}
+                            </div>
+
+                            {(a.description || createdLabel || dueLabel || assigned) && (
+                              <div className="mt-2 space-y-1 text-sm text-zinc-600 dark:text-zinc-400">
+                                {a.description && (
+                                  <div className="line-clamp-2">{a.description}</div>
+                                )}
+                                <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
+                                  {createdLabel && (
+                                    <span>Creada: {createdLabel}</span>
+                                  )}
+                                  {dueLabel && <span>Límite: {dueLabel}</span>}
+                                  {assigned && (
+                                    <span>
+                                      Asignada a:{" "}
+                                      <span className="font-medium">
+                                        {assigned}
+                                      </span>
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
                             )}
                           </div>
 
-                          {(a.description || createdLabel || dueLabel || assigned) && (
-                            <div className="mt-2 space-y-1 text-sm text-zinc-600 dark:text-zinc-400">
-                              {a.description && (
-                                <div className="line-clamp-2">{a.description}</div>
-                              )}
-                              <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
-                                {createdLabel && (
-                                  <span>Creada: {createdLabel}</span>
-                                )}
-                                {dueLabel && <span>Límite: {dueLabel}</span>}
-                                {assigned && (
-                                  <span>
-                                    Asignada a:{" "}
-                                    <span className="font-medium">
-                                      {assigned}
-                                    </span>
-                                  </span>
-                                )}
+                          <div className="flex shrink-0 items-center gap-2">
+                            <a
+                              href="#"
+                              className="inline-flex h-9 items-center justify-center rounded-md border border-zinc-200 bg-white px-3 text-xs font-medium text-zinc-900 hover:bg-zinc-100 dark:border-zinc-800 dark:bg-black dark:text-zinc-100 dark:hover:bg-zinc-900"
+                            >
+                              Abrir
+                            </a>
+                            <DeleteAssignmentForm
+                              assignmentId={a.id}
+                              formAction={deleteAssignment}
+                            />
+                          </div>
+                        </div>
+
+                        <div className="mt-4 grid gap-3">
+                          {isCompleted(a.status) && (
+                            <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-4 dark:border-zinc-800 dark:bg-black">
+                              <div className="text-sm font-medium text-zinc-950 dark:text-zinc-50">
+                                Estado de la tarea
+                              </div>
+                              <div className="mt-2 text-sm text-zinc-700 dark:text-zinc-300">
+                                Completada por el supervisor.
                               </div>
                             </div>
                           )}
-                        </div>
 
-                        <div className="flex shrink-0 items-center gap-2">
-                          <a
-                            href="#"
-                            className="inline-flex h-9 items-center justify-center rounded-md border border-zinc-200 bg-white px-3 text-xs font-medium text-zinc-900 hover:bg-zinc-100 dark:border-zinc-800 dark:bg-black dark:text-zinc-100 dark:hover:bg-zinc-900"
-                          >
-                            Abrir
-                          </a>
-                          <DeleteAssignmentForm
-                            assignmentId={a.id}
-                            formAction={deleteAssignment}
-                          />
+                          {hasDelivery && (
+                            <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-4 dark:border-zinc-800 dark:bg-black">
+                              <div className="text-sm font-semibold text-zinc-950 dark:text-zinc-50">
+                                Evidencia de cumplimiento
+                              </div>
+                              <div className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                                {submittedByLabel ? `Enviado por ${submittedByLabel}` : "Documento PDF"}
+                                {submittedAtLabel
+                                  ? ` · ${formatShortDate(submittedAtLabel)}`
+                                  : ""}
+                              </div>
+
+                              {deliveryFiles.length > 0 && (
+                                <div className="mt-3 grid gap-2">
+                                  {deliveryFiles.map((f, idx) => (
+                                    <div
+                                      key={`${f.path}-${idx}`}
+                                      className="flex items-center justify-between gap-3 rounded-md border border-zinc-200 bg-white px-4 py-3 dark:border-zinc-800 dark:bg-zinc-900/40"
+                                    >
+                                      <div className="flex min-w-0 items-center gap-3">
+                                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-200 dark:bg-emerald-950/30 dark:text-emerald-300 dark:ring-emerald-900">
+                                          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" className="h-5 w-5">
+                                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                                            <path d="M14 2v6h6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                                            <path d="M9 15h6M9 18h4" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                                          </svg>
+                                        </div>
+                                        <div className="min-w-0">
+                                          <div className="truncate text-sm font-medium text-zinc-950 dark:text-zinc-50">
+                                            {f.name}
+                                          </div>
+                                          <div className="text-xs text-zinc-500 dark:text-zinc-400">
+                                            Evidencia {idx + 1} · PDF
+                                          </div>
+                                        </div>
+                                      </div>
+                                      <div className="flex shrink-0 items-center gap-2">
+                                        <a
+                                          href={`${DOWNLOAD_BASE_PATH}?assignment_id=${encodeURIComponent(a.id)}&idx=${encodeURIComponent(String(idx))}`}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="inline-flex h-8 items-center rounded-md border border-zinc-200 bg-white px-3 text-xs font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                                        >
+                                          Ver
+                                        </a>
+                                        <a
+                                          href={`${DOWNLOAD_BASE_PATH}?assignment_id=${encodeURIComponent(a.id)}&idx=${encodeURIComponent(String(idx))}&disposition=attachment`}
+                                          className="inline-flex h-8 items-center rounded-md bg-zinc-900 px-3 text-xs font-medium text-white hover:bg-zinc-700 dark:bg-zinc-50 dark:text-zinc-950 dark:hover:bg-zinc-200"
+                                        >
+                                          Descargar
+                                        </a>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          )}
                         </div>
                       </div>
                     </div>
