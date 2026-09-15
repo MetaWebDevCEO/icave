@@ -146,7 +146,7 @@ function buildSections(role: UserRole): SidebarSection[] {
           items: [
             { title: "Chat Directo", href: "/platform/chat" },
             { title: "Correos", href: "/platform/correos" },
-            { title: "Documentos", href: "/platform/documentos" },
+            { title: "Archivero", href: "/platform/documentos" },
             { title: "Planificador", href: "/platform/planificador" },
           ],
         },
@@ -173,7 +173,7 @@ function buildSections(role: UserRole): SidebarSection[] {
           items: [
             { title: "Chat Directo", href: "/platform/chat" },
             { title: "Correos", href: "/platform/correos" },
-            { title: "Documentos", href: "/platform/documentos" },
+            { title: "Archivero", href: "/platform/documentos" },
             { title: "Planificador", href: "/platform/planificador" },
           ],
         },

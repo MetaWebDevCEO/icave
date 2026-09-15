@@ -154,7 +154,7 @@ export function buildRevisorSections(): SidebarSection[] {
       items: [
         { title: "Chat Directo", href: REVISOR_ROUTES.chat },
         { title: "Correos", href: REVISOR_ROUTES.correos },
-        { title: "Documentos", href: REVISOR_ROUTES.documentos },
+        { title: "Archivero", href: REVISOR_ROUTES.documentos },
         { title: "Planificador", href: REVISOR_ROUTES.planificador },
       ],
     },
@@ -185,7 +185,7 @@ export function buildSupervisorSections(): SidebarSection[] {
       items: [
         { title: "Chat Directo", href: SUPERVISOR_ROUTES.chat },
         { title: "Correos", href: SUPERVISOR_ROUTES.correos },
-        { title: "Documentos", href: SUPERVISOR_ROUTES.documentos },
+        { title: "Archivero", href: SUPERVISOR_ROUTES.documentos },
         { title: "Planificador", href: SUPERVISOR_ROUTES.planificador },
       ],
     },

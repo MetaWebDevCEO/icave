@@ -346,6 +346,71 @@ export default async function AsignacionRevisorPage({
       .sort((a, b) => a.localeCompare(b));
   }
 
+  type MatrizRow = {
+    id?: string | number | null;
+    created_at?: string | null;
+    actividad?: string | null;
+    frecuencia?: string | null;
+    [key: string]: unknown;
+  };
+  const SELECT_MATRIX_EXTENDED = "id, created_at, actividad, frecuencia";
+  const SELECT_MATRIX_BASE = "id, actividad, frecuencia";
+
+  const fetchMatriz = async (client: SupabaseClient) => {
+    const extended = await client
+      .from("matriz")
+      .select(SELECT_MATRIX_EXTENDED)
+      .limit(500);
+    if (!isSchemaMismatch(extended.error)) return extended;
+
+    return client
+      .from("matriz")
+      .select(SELECT_MATRIX_BASE)
+      .limit(500);
+  };
+
+  const preferredMatriz = admin ?? supabase;
+  const matrizResult = await fetchMatriz(preferredMatriz);
+  let rawMatrizRows: MatrizRow[] = (matrizResult.data ?? []) as MatrizRow[];
+  let matrizFetchError: PostgrestError | null = matrizResult.error;
+  if ((matrizFetchError || rawMatrizRows.length === 0) && admin && preferredMatriz !== admin) {
+    const fb = await fetchMatriz(admin);
+    rawMatrizRows = (fb.data ?? []) as MatrizRow[];
+    matrizFetchError = fb.error ?? matrizFetchError;
+  }
+
+  const byMatrizId = new Map<number, { id: number; actividad: string; frecuencia: string; created_at: string | null }>();
+  for (const r of rawMatrizRows) {
+    const rawId = r.id;
+    let numericId: number | null = null;
+    if (typeof rawId === "number" && Number.isFinite(rawId)) {
+      numericId = Math.round(rawId);
+    } else if (typeof rawId === "string") {
+      const n = Number(rawId.trim());
+      if (Number.isFinite(n)) numericId = Math.round(n);
+    }
+    if (numericId === null || numericId < 1 || numericId > 64) continue;
+    const actividadRaw = r.actividad;
+    const frecuenciaRaw = r.frecuencia;
+    const actividad = typeof actividadRaw === "string" ? actividadRaw.trim() : "";
+    const frecuencia = typeof frecuenciaRaw === "string" ? frecuenciaRaw.trim() : "";
+    const created_at = typeof r.created_at === "string" ? r.created_at : null;
+    const existing = byMatrizId.get(numericId);
+    if (!existing || (actividad.length > 0 && existing.actividad.length === 0) || (frecuencia.length > 0 && existing.frecuencia.length === 0)) {
+      byMatrizId.set(numericId, { id: numericId, actividad, frecuencia, created_at: existing?.created_at ?? created_at });
+    }
+  }
+
+  const matrizOptions: { index: number; actividad: string; frecuencia: string }[] = [];
+  for (let i = 1; i <= 64; i++) {
+    const row = byMatrizId.get(i);
+    matrizOptions.push({
+      index: i,
+      actividad: row?.actividad ?? "",
+      frecuencia: row?.frecuencia ?? "",
+    });
+  }
+
   async function deleteAssignment(formData: FormData) {
     "use server";
 
@@ -466,7 +531,8 @@ export default async function AsignacionRevisorPage({
     const role = await resolveRoleForUser(supabase, user.id);
     if (role !== "revisor") redirect("/platform");
 
-    const title = String(formData.get("title") ?? "").trim();
+    const matrizIndexRaw = String(formData.get("matriz_index") ?? "").trim();
+    const matrizIndex = Number(matrizIndexRaw);
     const description = String(formData.get("description") ?? "").trim();
     const dueAt = String(formData.get("due_at") ?? "").trim();
     const priorityRaw = String(formData.get("priority") ?? "").trim();
@@ -479,12 +545,86 @@ export default async function AsignacionRevisorPage({
       .toLowerCase();
     const attachment = formData.get("attachment");
 
-    if (!title) {
+    if (!Number.isFinite(matrizIndex) || matrizIndex < 1 || matrizIndex > 64) {
       redirect(
         "/platform/revisor/asignacion?error=" +
-          encodeURIComponent("El título es obligatorio.")
+          encodeURIComponent("Selecciona una actividad de la matriz (1-64).")
       );
     }
+
+    type MatrizRowInner = {
+      id?: string | number | null;
+      created_at?: string | null;
+      actividad?: string | null;
+      frecuencia?: string | null;
+      [key: string]: unknown;
+    };
+
+    const loadMatrizRow = async (client: SupabaseClient, idx: number) => {
+      const tryA = await client
+        .from("matriz")
+        .select("id, created_at, actividad, frecuencia")
+        .limit(1000);
+      if (tryA.error && !isSchemaMismatch(tryA.error)) {
+        return { data: null, error: tryA.error as PostgrestError | null };
+      }
+      if (tryA.data) {
+        const found = (tryA.data as MatrizRowInner[]).find((cand) => {
+          const raw = cand.id;
+          let n: number | null = null;
+          if (typeof raw === "number" && Number.isFinite(raw)) n = Math.round(raw);
+          else if (typeof raw === "string") {
+            const v = Number(raw.trim());
+            if (Number.isFinite(v)) n = Math.round(v);
+          }
+          return n === idx;
+        });
+        if (found) return { data: found, error: null };
+      }
+      const tryB = await client
+        .from("matriz")
+        .select("id, actividad, frecuencia")
+        .limit(1000);
+      if (tryB.error && !isSchemaMismatch(tryB.error)) {
+        return { data: null, error: tryB.error as PostgrestError | null };
+      }
+      if (!tryB.data) return { data: null, error: tryB.error ?? null };
+      const found = (tryB.data as MatrizRowInner[]).find((cand) => {
+        const raw = cand.id;
+        let n: number | null = null;
+        if (typeof raw === "number" && Number.isFinite(raw)) n = Math.round(raw);
+        else if (typeof raw === "string") {
+          const v = Number(raw.trim());
+          if (Number.isFinite(v)) n = Math.round(v);
+        }
+        return n === idx;
+      });
+      return { data: found ?? null, error: tryB.error ?? null };
+    };
+
+    const matrizReadClient = admin ?? supabase;
+    let matrizRowRes = await loadMatrizRow(matrizReadClient, Math.round(matrizIndex));
+    if (admin && matrizReadClient !== admin && (!matrizRowRes.data || matrizRowRes.error)) {
+      matrizRowRes = await loadMatrizRow(admin, Math.round(matrizIndex));
+    }
+
+    const matrizRow = matrizRowRes.data;
+    const actividad =
+      matrizRow && typeof matrizRow.actividad === "string" ? matrizRow.actividad.trim() : "";
+    const frecuencia =
+      matrizRow && typeof matrizRow.frecuencia === "string" ? matrizRow.frecuencia.trim() : "";
+
+    if (!matrizRow || actividad.length === 0) {
+      redirect(
+        "/platform/revisor/asignacion?error=" +
+          encodeURIComponent(
+            `No se encontró actividad ${Math.round(matrizIndex)} en la tabla matriz. Revisa que exista la fila.`
+          )
+      );
+    }
+
+    const title = actividad;
+    const baseDescription = description;
 
     if (!assignedEmail || !isEmail(assignedEmail)) {
       redirect(
@@ -575,8 +715,8 @@ export default async function AsignacionRevisorPage({
       revisor_id: user.id,
     };
 
-    if (description) {
-      payloadFull.description = `${description}\n\nAsignada a: ${assignedEmail}`;
+    if (baseDescription) {
+      payloadFull.description = `${baseDescription}\n\nAsignada a: ${assignedEmail}`;
     }
     payloadFull.due_at = dueAt;
     payloadFull.priority = priority;
@@ -611,7 +751,7 @@ export default async function AsignacionRevisorPage({
         assigned_to: assignedEmail,
       };
 
-      if (description) payloadA.description = `${description}\n\nAsignada a: ${assignedEmail}`;
+      if (baseDescription) payloadA.description = `${baseDescription}\n\nAsignada a: ${assignedEmail}`;
 
       if (
         (lower.includes("column") ||
@@ -635,7 +775,7 @@ export default async function AsignacionRevisorPage({
           assigned_to_email: assignedEmail,
         };
 
-        if (description) payloadB.description = `${description}\n\nAsignada a: ${assignedEmail}`;
+        if (baseDescription) payloadB.description = `${baseDescription}\n\nAsignada a: ${assignedEmail}`;
 
         inserted = await tryInsert(payloadB);
       }
@@ -989,11 +1129,11 @@ export default async function AsignacionRevisorPage({
           </div>
         </div>
 
-        <div className="mt-4 rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
+        <div className="mt-4 rounded-lg overflow-hidden border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-950">
           <form
             method="GET"
             action={basePath}
-            className="grid grid-cols-1 gap-3 md:grid-cols-[2fr_1fr_1fr_1.3fr_auto_auto]"
+            className="grid grid-cols-1 gap-4 md:grid-cols-[2fr_1fr_1fr_1.3fr_auto_auto] items-end"
           >
             <input type="hidden" name="status" value={statusFilter ?? "all"} />
 
@@ -1081,48 +1221,69 @@ export default async function AsignacionRevisorPage({
           </div>
         )}
 
-        <div className="mt-4 grid gap-4 lg:grid-cols-[420px_1fr]">
-          <div className="rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
-            <div className="border-b border-zinc-200 px-5 py-4 dark:border-zinc-800">
-              <div className="text-sm font-medium text-zinc-950 dark:text-zinc-50">
+        <div className="mt-4 grid gap-6 items-start lg:grid-cols-[minmax(0,440px)_minmax(0,1fr)]">
+          <div className="overflow-hidden self-start rounded-lg border border-zinc-200 bg-white lg:sticky lg:top-4 lg:max-h-[calc(100dvh-6rem)] lg:overflow-y-auto dark:border-zinc-800 dark:bg-zinc-950">
+            <div className="border-b border-zinc-200 px-6 py-5 dark:border-zinc-800">
+              <div className="text-base font-semibold text-zinc-950 dark:text-zinc-50">
                 Crear tarea
               </div>
-              <div className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
+              <div className="mt-1.5 text-sm leading-relaxed text-zinc-600 dark:text-zinc-400">
                 Publica una asignación para tus revisiones.
               </div>
             </div>
 
-            <form action={createAssignment} className="grid gap-4 p-5">
-              <label className="grid gap-1 text-sm">
-                <span className="text-zinc-700 dark:text-zinc-300">Título</span>
-                <input
-                  name="title"
+            <form action={createAssignment} className="grid gap-6 p-6">
+              <label className="grid gap-2.5 text-sm">
+                <span className="text-zinc-800 dark:text-zinc-200 font-medium">
+                  Actividad de la matriz
+                </span>
+                <select
+                  name="matriz_index"
                   required
-                  placeholder="Ej. Revisión de documento 001"
-                  className="h-10 rounded-md border border-zinc-200 bg-white px-3 text-zinc-950 outline-none focus:ring-2 focus:ring-zinc-400 dark:border-zinc-800 dark:bg-black dark:text-zinc-50"
-                />
+                  defaultValue=""
+                  className="min-h-[2.75rem] w-full rounded-md border border-zinc-200 bg-white px-4 py-2 text-sm text-zinc-950 outline-none focus:ring-2 focus:ring-zinc-400 dark:border-zinc-800 dark:bg-black dark:text-zinc-50"
+                >
+                  <option value="" disabled hidden>
+                    Seleccionar actividad
+                  </option>
+                  {matrizOptions.map((m) => {
+                    const act =
+                      m.actividad && m.actividad.length > 0
+                        ? m.actividad
+                        : "(sin actividad registrada)";
+                    return (
+                      <option key={m.index} value={String(m.index)}>
+                        {act}
+                      </option>
+                    );
+                  })}
+                </select>
+                <div className="text-xs leading-relaxed text-zinc-500 dark:text-zinc-400">
+                  Las actividades se cargan directamente desde la tabla{" "}
+                  <span className="font-mono">matriz</span>. El título de la
+                  tarea será el nombre de la actividad seleccionada.
+                </div>
               </label>
 
-              <label className="grid gap-1 text-sm">
-                <span className="text-zinc-700 dark:text-zinc-300">
+              <label className="grid gap-2.5 text-sm">
+                <span className="text-zinc-800 dark:text-zinc-200 font-medium">
                   Instrucciones detalladas
                 </span>
                 <textarea
                   name="description"
-                  rows={4}
-                  placeholder="Escribe las instrucciones para el revisor…"
-                  required
-                  className="resize-none rounded-md border border-zinc-200 bg-white px-3 py-2 text-zinc-950 outline-none focus:ring-2 focus:ring-zinc-400 dark:border-zinc-800 dark:bg-black dark:text-zinc-50"
+                  rows={5}
+                  placeholder="Instrucciones adicionales, contexto o referencias para quien reciba la tarea…"
+                  className="w-full resize-none rounded-md border border-zinc-200 bg-white px-4 py-2.5 text-sm text-zinc-950 outline-none focus:ring-2 focus:ring-zinc-400 dark:border-zinc-800 dark:bg-black dark:text-zinc-50"
                 />
               </label>
 
-              <label className="grid gap-1 text-sm">
-                <span className="text-zinc-700 dark:text-zinc-300">
+              <label className="grid gap-2.5 text-sm">
+                <span className="text-zinc-800 dark:text-zinc-200 font-medium">
                   Prioridad
                 </span>
-                <div className="grid gap-2">
-                  <div className="grid grid-cols-3 gap-2">
-                    <label className="cursor-pointer">
+                <div className="grid gap-2.5">
+                  <div className="grid w-full grid-cols-3 gap-2.5 min-w-0">
+                    <label className="cursor-pointer min-w-0">
                       <input
                         type="radio"
                         name="priority"
@@ -1130,13 +1291,13 @@ export default async function AsignacionRevisorPage({
                         className="peer sr-only"
                         required
                       />
-                      <div className="flex items-center justify-center gap-2 rounded-md border border-zinc-200 bg-white px-3 py-2 text-xs font-medium text-zinc-900 transition-colors peer-checked:border-red-500 peer-checked:bg-red-50 peer-checked:text-red-800 hover:bg-zinc-50 dark:border-zinc-800 dark:bg-black dark:text-zinc-100 dark:hover:bg-zinc-900 dark:peer-checked:border-red-400 dark:peer-checked:bg-red-950/40 dark:peer-checked:text-red-200">
-                        <span className="h-2.5 w-2.5 rounded-full bg-red-500" />
+                      <div className="flex min-w-0 items-center justify-center gap-2 rounded-md border border-zinc-200 bg-white px-3 py-2.5 text-xs font-medium text-zinc-900 transition-colors truncate peer-checked:border-red-500 peer-checked:bg-red-50 peer-checked:text-red-800 hover:bg-zinc-50 dark:border-zinc-800 dark:bg-black dark:text-zinc-100 dark:hover:bg-zinc-900 dark:peer-checked:border-red-400 dark:peer-checked:bg-red-950/40 dark:peer-checked:text-red-200">
+                        <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-red-500" />
                         Urgente
                       </div>
                     </label>
 
-                    <label className="cursor-pointer">
+                    <label className="cursor-pointer min-w-0">
                       <input
                         type="radio"
                         name="priority"
@@ -1144,35 +1305,35 @@ export default async function AsignacionRevisorPage({
                         className="peer sr-only"
                         defaultChecked
                       />
-                      <div className="flex items-center justify-center gap-2 rounded-md border border-zinc-200 bg-white px-3 py-2 text-xs font-medium text-zinc-900 transition-colors peer-checked:border-amber-500 peer-checked:bg-amber-50 peer-checked:text-amber-800 hover:bg-zinc-50 dark:border-zinc-800 dark:bg-black dark:text-zinc-100 dark:hover:bg-zinc-900 dark:peer-checked:border-amber-400 dark:peer-checked:bg-amber-950/40 dark:peer-checked:text-amber-200">
-                        <span className="h-2.5 w-2.5 rounded-full bg-amber-500" />
+                      <div className="flex min-w-0 items-center justify-center gap-2 rounded-md border border-zinc-200 bg-white px-3 py-2.5 text-xs font-medium text-zinc-900 transition-colors truncate peer-checked:border-amber-500 peer-checked:bg-amber-50 peer-checked:text-amber-800 hover:bg-zinc-50 dark:border-zinc-800 dark:bg-black dark:text-zinc-100 dark:hover:bg-zinc-900 dark:peer-checked:border-amber-400 dark:peer-checked:bg-amber-950/40 dark:peer-checked:text-amber-200">
+                        <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-amber-500" />
                         Medio
                       </div>
                     </label>
 
-                    <label className="cursor-pointer">
+                    <label className="cursor-pointer min-w-0">
                       <input
                         type="radio"
                         name="priority"
                         value="No Urgente"
                         className="peer sr-only"
                       />
-                      <div className="flex items-center justify-center gap-2 rounded-md border border-zinc-200 bg-white px-3 py-2 text-xs font-medium text-zinc-900 transition-colors peer-checked:border-emerald-500 peer-checked:bg-emerald-50 peer-checked:text-emerald-800 hover:bg-zinc-50 dark:border-zinc-800 dark:bg-black dark:text-zinc-100 dark:hover:bg-zinc-900 dark:peer-checked:border-emerald-400 dark:peer-checked:bg-emerald-950/40 dark:peer-checked:text-emerald-200">
-                        <span className="h-2.5 w-2.5 rounded-full bg-emerald-500" />
+                      <div className="flex min-w-0 items-center justify-center gap-2 rounded-md border border-zinc-200 bg-white px-3 py-2.5 text-xs font-medium text-zinc-900 transition-colors truncate peer-checked:border-emerald-500 peer-checked:bg-emerald-50 peer-checked:text-emerald-800 hover:bg-zinc-50 dark:border-zinc-800 dark:bg-black dark:text-zinc-100 dark:hover:bg-zinc-900 dark:peer-checked:border-emerald-400 dark:peer-checked:bg-emerald-950/40 dark:peer-checked:text-emerald-200">
+                        <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-emerald-500" />
                         No urgente
                       </div>
                     </label>
                   </div>
 
-                  <div className="text-xs text-zinc-500 dark:text-zinc-400">
+                  <div className="text-xs leading-relaxed text-zinc-500 dark:text-zinc-400">
                     Urgente: notificación inmediata. Medio: recordatorio 48h
                     antes del vencimiento. No urgente: seguimiento estándar.
                   </div>
                 </div>
               </label>
 
-              <label className="grid gap-1 text-sm">
-                <span className="text-zinc-700 dark:text-zinc-300">
+              <label className="grid gap-2.5 text-sm">
+                <span className="text-zinc-800 dark:text-zinc-200 font-medium">
                   Asignar a (correo)
                 </span>
                 {userEmails.length > 0 ? (
@@ -1180,7 +1341,7 @@ export default async function AsignacionRevisorPage({
                     name="assigned_to_email"
                     required
                     defaultValue=""
-                    className="h-10 rounded-md border border-zinc-200 bg-white px-3 text-zinc-950 outline-none focus:ring-2 focus:ring-zinc-400 dark:border-zinc-800 dark:bg-black dark:text-zinc-50"
+                    className="h-11 w-full rounded-md border border-zinc-200 bg-white px-4 text-sm text-zinc-950 outline-none focus:ring-2 focus:ring-zinc-400 dark:border-zinc-800 dark:bg-black dark:text-zinc-50"
                   >
                     <option value="" disabled hidden>
                       Seleccionar correo
@@ -1197,16 +1358,16 @@ export default async function AsignacionRevisorPage({
                     type="email"
                     required
                     placeholder="correo@dominio.com"
-                    className="h-10 rounded-md border border-zinc-200 bg-white px-3 text-zinc-950 outline-none focus:ring-2 focus:ring-zinc-400 dark:border-zinc-800 dark:bg-black dark:text-zinc-50"
+                    className="h-11 w-full rounded-md border border-zinc-200 bg-white px-4 text-sm text-zinc-950 outline-none focus:ring-2 focus:ring-zinc-400 dark:border-zinc-800 dark:bg-black dark:text-zinc-50"
                   />
                 )}
-                <div className="text-xs text-zinc-500 dark:text-zinc-400">
+                <div className="text-xs leading-relaxed text-zinc-500 dark:text-zinc-400">
                   Se asigna por correo (usuarios dados de alta).
                 </div>
               </label>
 
-              <label className="grid gap-1 text-sm">
-                <span className="text-zinc-700 dark:text-zinc-300">
+              <label className="grid gap-2.5 text-sm">
+                <span className="text-zinc-800 dark:text-zinc-200 font-medium">
                   Fecha límite
                 </span>
                 <input
@@ -1214,37 +1375,37 @@ export default async function AsignacionRevisorPage({
                   type="date"
                   required
                   max={maxDueISO}
-                  className="h-10 rounded-md border border-zinc-200 bg-white px-3 text-zinc-950 outline-none focus:ring-2 focus:ring-zinc-400 dark:border-zinc-800 dark:bg-black dark:text-zinc-50"
+                  className="h-11 w-full rounded-md border border-zinc-200 bg-white px-4 text-sm text-zinc-950 outline-none focus:ring-2 focus:ring-zinc-400 dark:border-zinc-800 dark:bg-black dark:text-zinc-50"
                 />
-                <div className="text-xs text-zinc-500 dark:text-zinc-400">
+                <div className="text-xs leading-relaxed text-zinc-500 dark:text-zinc-400">
                   No se permite una fecha posterior al último día del mes actual
                   ({maxDueISO}).
                 </div>
               </label>
 
-              <label className="grid gap-1 text-sm">
-                <span className="text-zinc-700 dark:text-zinc-300">
+              <label className="grid gap-2.5 text-sm">
+                <span className="text-zinc-800 dark:text-zinc-200 font-medium">
                   Adjuntos (solo PDF)
                 </span>
                 <input
                   name="attachment"
                   type="file"
                   accept="application/pdf,.pdf"
-                  className="block w-full text-sm text-zinc-700 file:mr-4 file:rounded-md file:border file:border-zinc-200 file:bg-white file:px-3 file:py-2 file:text-sm file:font-medium file:text-zinc-900 hover:file:bg-zinc-100 dark:text-zinc-300 dark:file:border-zinc-800 dark:file:bg-black dark:file:text-zinc-100 dark:hover:file:bg-zinc-900"
+                  className="block w-full text-sm text-zinc-700 file:mr-4 file:rounded-md file:border file:border-zinc-200 file:bg-white file:px-4 file:py-2.5 file:text-sm file:font-medium file:text-zinc-900 hover:file:bg-zinc-100 dark:text-zinc-300 dark:file:border-zinc-800 dark:file:bg-black dark:file:text-zinc-100 dark:hover:file:bg-zinc-900"
                 />
-                <div className="text-xs text-zinc-500 dark:text-zinc-400">
+                <div className="text-xs leading-relaxed text-zinc-500 dark:text-zinc-400">
                   Tipo permitido: PDF. Tamaño máximo: 10,000 KB (10 MB).
                 </div>
               </label>
 
               <button
                 type="submit"
-                className="inline-flex h-10 items-center justify-center rounded-md bg-zinc-900 px-4 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
+                className="inline-flex h-11 w-full items-center justify-center rounded-md bg-zinc-900 px-4 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
               >
                 Publicar
               </button>
 
-              <div className="text-xs text-zinc-500 dark:text-zinc-400">
+              <div className="text-xs leading-relaxed text-zinc-500 dark:text-zinc-400">
                 Si tu tabla <span className="font-medium">asignaciones</span> no
                 tiene columnas como <span className="font-medium">description</span>{" "}
                 o <span className="font-medium">due_at</span>, se guardará solo
@@ -1253,14 +1414,14 @@ export default async function AsignacionRevisorPage({
             </form>
           </div>
 
-          <div className="space-y-3">
-            <div className="rounded-lg border border-zinc-200 bg-white px-5 py-4 dark:border-zinc-800 dark:bg-zinc-950">
+          <div className="min-w-0 space-y-4">
+            <div className="overflow-hidden rounded-lg border border-zinc-200 bg-white px-6 py-5 dark:border-zinc-800 dark:bg-zinc-950">
               <div className="flex items-center justify-between gap-3">
                 <div>
-                  <div className="text-sm font-medium text-zinc-950 dark:text-zinc-50">
+                  <div className="text-base font-semibold text-zinc-950 dark:text-zinc-50">
                     Tareas publicadas
                   </div>
-                  <div className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
+                  <div className="mt-1.5 text-sm leading-relaxed text-zinc-600 dark:text-zinc-400">
                     {assignments.length} resultados
                   </div>
                 </div>
@@ -1280,7 +1441,7 @@ export default async function AsignacionRevisorPage({
             )}
 
             {!listError && assignments.length > 0 && (
-              <div className="grid gap-3">
+              <div className="grid gap-4 min-w-0">
                 {assignments.map((a) => {
                   const createdLabel = a.created_at
                     ? formatCalendarDateShort(a.created_at)
@@ -1302,7 +1463,7 @@ export default async function AsignacionRevisorPage({
                   return (
                     <div
                       key={a.id}
-                      className="overflow-hidden rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950"
+                      className="min-w-0 overflow-hidden rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950"
                     >
                       <div className="px-5 py-4">
                         <div className="flex items-start justify-between gap-4">
@@ -1327,17 +1488,17 @@ export default async function AsignacionRevisorPage({
                             </div>
 
                             {(a.description || createdLabel || dueLabel || assigned) && (
-                              <div className="mt-2 space-y-1 text-sm text-zinc-600 dark:text-zinc-400">
+                              <div className="mt-2.5 space-y-1.5 text-sm text-zinc-600 dark:text-zinc-400">
                                 {a.description && (
-                                  <div className="line-clamp-2">{a.description}</div>
+                                  <div className="min-w-0 break-words line-clamp-2 leading-relaxed">{a.description}</div>
                                 )}
-                                <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
+                                <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs min-w-0">
                                   {createdLabel && (
-                                    <span>Creada: {createdLabel}</span>
+                                    <span className="break-words">Creada: {createdLabel}</span>
                                   )}
-                                  {dueLabel && <span>Límite: {dueLabel}</span>}
+                                  {dueLabel && <span className="break-words">Límite: {dueLabel}</span>}
                                   {assigned && (
-                                    <span>
+                                    <span className="break-words min-w-0">
                                       Asignada a:{" "}
                                       <span className="font-medium">
                                         {assigned}
