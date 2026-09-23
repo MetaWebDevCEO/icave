@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -16,7 +16,67 @@ export type SidebarSection = {
   items: SidebarNavItem[];
 };
 
-export function Sidebar({
+// Cada item del sidebar memoizado → no re-renderiza por cambio de pathname
+// si este item no estaba seleccionado.
+const SidebarLink = memo(function SidebarLink({
+  item,
+  pathname,
+  onClose,
+}: {
+  item: SidebarNavItem;
+  pathname: string | null;
+  onClose: () => void;
+}) {
+  const active =
+    pathname === item.href ||
+    (item.href !== "/platform" && pathname?.startsWith(item.href));
+
+  return (
+    <Link
+      href={item.href}
+      prefetch={true}
+      onClick={onClose}
+      className={[
+        "flex h-10 items-center rounded-md px-3 text-sm transition-colors",
+        active
+          ? "bg-zinc-100 text-zinc-950 dark:bg-zinc-900 dark:text-zinc-50"
+          : "text-zinc-700 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-900/60",
+      ].join(" ")}
+    >
+      {item.title}
+    </Link>
+  );
+});
+
+const SidebarSectionBlock = memo(function SidebarSectionBlock({
+  section,
+  pathname,
+  onClose,
+}: {
+  section: SidebarSection;
+  pathname: string | null;
+  onClose: () => void;
+}) {
+  return (
+    <div key={section.title}>
+      <div className="px-2 py-2 text-xs font-medium text-zinc-500 dark:text-zinc-400">
+        {section.title}
+      </div>
+      <div className="grid gap-1">
+        {section.items.map((item) => (
+          <SidebarLink
+            key={item.href}
+            item={item}
+            pathname={pathname}
+            onClose={onClose}
+          />
+        ))}
+      </div>
+    </div>
+  );
+});
+
+function SidebarImpl({
   sections,
   open,
   onClose,
@@ -31,56 +91,68 @@ export function Sidebar({
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const displayLabel = (userLabel ?? "Cuenta").trim() || "Cuenta";
   const secondaryLabel = displayLabel.includes("@") ? "" : "";
-  const initials = displayLabel
-    .split(/[\s@._-]+/g)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part) => part[0]?.toUpperCase())
-    .join("");
+  const initials = useMemo(() => {
+    return displayLabel
+      .split(/[\s@._-]+/g)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((part) => part[0]?.toUpperCase())
+      .join("");
+  }, [displayLabel]);
 
   useEffect(() => {
     let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
 
     async function loadAvatar() {
-      const supabase = createClient();
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
+      // Esperamos 80 ms de idle para no bloquear el primer render
+      // (cambios de pestaña inmediatos; avatar llega después sin prisas)
+      timer = setTimeout(async () => {
+        try {
+          const supabase = createClient();
+          const {
+            data: { user },
+          } = await supabase.auth.getUser();
 
-      const metadata =
-        user?.user_metadata && typeof user.user_metadata === "object"
-          ? (user.user_metadata as Record<string, unknown>)
-          : null;
+          const metadata =
+            user?.user_metadata && typeof user.user_metadata === "object"
+              ? (user.user_metadata as Record<string, unknown>)
+              : null;
 
-      const bucket =
-        metadata && typeof metadata.avatar_bucket === "string"
-          ? metadata.avatar_bucket.trim()
-          : "";
-      const path =
-        metadata && typeof metadata.avatar_path === "string"
-          ? metadata.avatar_path.trim()
-          : "";
+          const bucket =
+            metadata && typeof metadata.avatar_bucket === "string"
+              ? metadata.avatar_bucket.trim()
+              : "";
+          const path =
+            metadata && typeof metadata.avatar_path === "string"
+              ? metadata.avatar_path.trim()
+              : "";
 
-      if (!bucket || !path) {
-        if (!cancelled) setAvatarUrl(null);
-        return;
-      }
+          if (!bucket || !path) {
+            if (!cancelled) setAvatarUrl(null);
+            return;
+          }
 
-      const { data, error } = await supabase.storage.from(bucket).createSignedUrl(path, 60 * 10);
+          const { data, error } = await supabase.storage
+            .from(bucket)
+            .createSignedUrl(path, 60 * 10);
 
-      if (cancelled) return;
-
-      if (error || !data?.signedUrl) {
-        setAvatarUrl(null);
-        return;
-      }
-
-      setAvatarUrl(data.signedUrl);
+          if (cancelled) return;
+          if (error || !data?.signedUrl) {
+            setAvatarUrl(null);
+            return;
+          }
+          setAvatarUrl(data.signedUrl);
+        } catch {
+          if (!cancelled) setAvatarUrl(null);
+        }
+      }, 80);
     }
 
     loadAvatar();
 
     return () => {
+      if (timer) clearTimeout(timer);
       cancelled = true;
     };
   }, []);
@@ -106,6 +178,7 @@ export function Sidebar({
         <div className="flex h-14 items-center border-b border-zinc-200 px-4 dark:border-zinc-800">
           <Link
             href="/platform"
+            prefetch={true}
             className="flex items-center gap-3 font-semibold tracking-tight text-zinc-950 dark:text-zinc-50"
             onClick={onClose}
           >
@@ -114,6 +187,7 @@ export function Sidebar({
               alt="Icave"
               width={26}
               height={26}
+              priority={true}
               className="h-[26px] w-[26px] object-contain"
             />
             Promas Icave
@@ -122,39 +196,14 @@ export function Sidebar({
 
         <nav className="flex-1 p-2">
           <div className="grid gap-4">
-            {sections.map((section) => {
-              return (
-                <div key={section.title}>
-                  <div className="px-2 py-2 text-xs font-medium text-zinc-500 dark:text-zinc-400">
-                    {section.title}
-                  </div>
-                  <div className="grid gap-1">
-                    {section.items.map((item) => {
-                      const active =
-                        pathname === item.href ||
-                        (item.href !== "/platform" &&
-                          pathname?.startsWith(item.href));
-
-                      return (
-                        <Link
-                          key={item.href}
-                          href={item.href}
-                          onClick={onClose}
-                          className={[
-                            "flex h-10 items-center rounded-md px-3 text-sm transition-colors",
-                            active
-                              ? "bg-zinc-100 text-zinc-950 dark:bg-zinc-900 dark:text-zinc-50"
-                              : "text-zinc-700 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-900/60",
-                          ].join(" ")}
-                        >
-                          {item.title}
-                        </Link>
-                      );
-                    })}
-                  </div>
-                </div>
-              );
-            })}
+            {sections.map((section) => (
+              <SidebarSectionBlock
+                key={section.title}
+                section={section}
+                pathname={pathname}
+                onClose={onClose}
+              />
+            ))}
           </div>
         </nav>
 
@@ -164,6 +213,7 @@ export function Sidebar({
               <div className="overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-[0_18px_40px_rgba(15,23,42,0.16)] dark:border-zinc-800 dark:bg-zinc-950">
                 <Link
                   href="/platform/configuracion"
+                  prefetch={true}
                   onClick={onClose}
                   className="flex w-full items-center px-4 py-3 text-sm font-medium text-zinc-700 transition-colors hover:bg-zinc-50 hover:text-zinc-950 dark:text-zinc-300 dark:hover:bg-zinc-900 dark:hover:text-zinc-50"
                 >
@@ -189,6 +239,8 @@ export function Sidebar({
                   <img
                     src={avatarUrl}
                     alt={`Avatar de ${displayLabel}`}
+                    loading="lazy"
+                    decoding="async"
                     className="h-full w-full object-cover"
                   />
                 ) : (
@@ -212,3 +264,5 @@ export function Sidebar({
     </>
   );
 }
+
+export const Sidebar = memo(SidebarImpl);

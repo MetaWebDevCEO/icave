@@ -127,6 +127,7 @@ export const REVISOR_ROUTES = {
 export const SUPERVISOR_ROUTES = {
   dashboard: "/platform/supervisor",
   rendimiento: "/platform/supervisor",
+  supervisores: "/platform/revisor/supervisores",
   status: "/platform/supervisor/status",
   bandeja: "/platform/supervisor/bandeja",
   task: "/platform/task",
@@ -175,6 +176,7 @@ export function buildSupervisorSections(): SidebarSection[] {
       title: "Plataforma (Supervisor)",
       items: [
         { title: "Mi Rendimiento", href: SUPERVISOR_ROUTES.dashboard },
+        { title: "Supervisores", href: SUPERVISOR_ROUTES.supervisores },
         { title: "Status", href: SUPERVISOR_ROUTES.status },
         { title: "Bandeja de Entrada", href: SUPERVISOR_ROUTES.bandeja },
         { title: "Task", href: SUPERVISOR_ROUTES.task },

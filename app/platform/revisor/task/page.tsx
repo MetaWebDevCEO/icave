@@ -17,10 +17,11 @@ import {
   isValidSubmissionPath,
   normalizeEmail as normalizeEmailUtil,
   listEvidenceInFolder,
+  sortByMostRecentMonthFirst,
   type SubmissionFile,
 } from "@/lib/submission-files";
 
-export const dynamic = "force-dynamic";
+export const revalidate = 15;
 
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 
@@ -51,12 +52,6 @@ function isSchemaMismatch(err: PostgrestError | null) {
     msg.includes("does not exist") ||
     msg.includes("column")
   );
-}
-
-function extractEntregaPathFromDescription(description: string | null | undefined) {
-  if (!description) return null;
-  const match = /^\s*entrega:\s*(\S+)\s*$/im.exec(description);
-  return match?.[1] ?? null;
 }
 
 function upsertEntregaIntoDescription(
@@ -377,14 +372,14 @@ export default async function RevisorTaskPage({
     );
   }
 
-  const assignments = (data ?? []).filter((row) => {
+  const assignments = sortByMostRecentMonthFirst((data ?? []).filter((row) => {
     if (statusFilter === "all") return true;
     const status = (row.status ?? "").trim().toLowerCase();
     if (statusFilter === "pending") return status.includes("pend");
     if (statusFilter === "progress") return status.includes("prog") || status.includes("curso");
     if (statusFilter === "completed") return status.includes("comp") || status.includes("done");
     return true;
-  });
+  }));
 
   async function deleteAssignment(formData: FormData) {
     "use server";

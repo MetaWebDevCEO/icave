@@ -237,3 +237,50 @@ export async function listEvidenceInFolder(
     mime: "application/pdf",
   }));
 }
+
+function safeParseDate(input: unknown): Date | null {
+  if (input instanceof Date) {
+    return isNaN(input.valueOf()) ? null : input;
+  }
+  if (typeof input === "string" && input.trim()) {
+    const d = new Date(input);
+    return isNaN(d.valueOf()) ? null : d;
+  }
+  return null;
+}
+
+export type SortableAssignmentRow = {
+  due_at?: unknown;
+  created_at?: unknown;
+};
+
+export function sortByMostRecentMonthFirst<T extends SortableAssignmentRow>(rows: T[]): T[] {
+  return [...rows].sort((a, b) => {
+    const dueA = safeParseDate(a.due_at);
+    const dueB = safeParseDate(b.due_at);
+    const createdA = safeParseDate(a.created_at);
+    const createdB = safeParseDate(b.created_at);
+
+    const sortDateA = dueA ?? createdA ?? new Date(0);
+    const sortDateB = dueB ?? createdB ?? new Date(0);
+
+    const yA = sortDateA.getFullYear();
+    const yB = sortDateB.getFullYear();
+    const mA = sortDateA.getMonth() + 1;
+    const mB = sortDateB.getMonth() + 1;
+    const monthKeyA = `${yA}-${String(mA).padStart(2, "0")}`;
+    const monthKeyB = `${yB}-${String(mB).padStart(2, "0")}`;
+
+    if (monthKeyA !== monthKeyB) {
+      return monthKeyB.localeCompare(monthKeyA);
+    }
+
+    if (sortDateA.getTime() !== sortDateB.getTime()) {
+      return sortDateA.getTime() - sortDateB.getTime();
+    }
+
+    const ca = createdA?.getTime() ?? 0;
+    const cb = createdB?.getTime() ?? 0;
+    return cb - ca;
+  });
+}

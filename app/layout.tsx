@@ -61,10 +61,30 @@ export const metadata: Metadata = {
     description: "Gestor SoS",
     images: [FAVICON_URL],
   },
-  metadataBase:
-    process.env.NEXT_PUBLIC_SITE_URL && process.env.NEXT_PUBLIC_SITE_URL.length > 0
-      ? new URL(process.env.NEXT_PUBLIC_SITE_URL)
-      : undefined,
+  metadataBase: (() => {
+    const candidates = [
+      process.env.NEXT_PUBLIC_SITE_URL,
+      process.env.NEXT_PUBLIC_APP_URL,
+      process.env.VERCEL_PROJECT_PRODUCTION_URL
+        ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
+        : undefined,
+      process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : undefined,
+      process.env.NODE_ENV === "production"
+        ? undefined
+        : "http://localhost:3000",
+    ];
+    for (const raw of candidates) {
+      if (typeof raw !== "string") continue;
+      const v = raw.trim().replace(/\/$/, "");
+      if (!v) continue;
+      try {
+        return new URL(v);
+      } catch {
+        continue;
+      }
+    }
+    return undefined;
+  })(),
 };
 
 export default function RootLayout({
@@ -73,8 +93,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className={`${geistMono.variable} h-full antialiased`}>
-      <body className="min-h-full flex flex-col">{children}</body>
+    <html lang="en" className={`${geistMono.variable} h-full antialiased overflow-x-hidden`}>
+      <body className="min-h-full flex flex-col overflow-x-hidden">{children}</body>
     </html>
   );
 }

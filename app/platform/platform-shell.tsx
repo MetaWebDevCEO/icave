@@ -44,7 +44,7 @@ export function PlatformShell({
   }, [currentUserId]);
 
   return (
-    <div className="min-h-screen bg-zinc-50 text-zinc-950 dark:bg-black dark:text-zinc-50">
+    <div className="min-h-screen bg-zinc-50 text-zinc-950 dark:bg-black dark:text-zinc-50 overflow-x-hidden">
       <Sidebar
         sections={sections}
         open={sidebarOpen}
@@ -52,7 +52,7 @@ export function PlatformShell({
         userLabel={currentUserEmail}
       />
 
-      <div className="md:pl-64">
+      <div className="md:pl-64 w-full min-w-0">
         <button
           type="button"
           aria-label="Abrir menú"
@@ -75,7 +75,7 @@ export function PlatformShell({
           </svg>
         </button>
 
-        <main className="p-4 md:pt-4">
+        <main className="p-4 md:pt-4 w-full min-w-0">
           {children ?? (
             <div className="mx-auto max-w-6xl">
               <div className="grid gap-4 md:grid-cols-3">

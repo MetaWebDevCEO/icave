@@ -24,10 +24,11 @@ import {
   normalizeEmail,
   parseSubmissionFiles,
   sanitizeFileName,
+  sortByMostRecentMonthFirst,
   type SubmissionFile,
 } from "@/lib/submission-files";
 
-export const dynamic = "force-dynamic";
+export const revalidate = 15;
 
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 
@@ -838,7 +839,7 @@ export default async function TaskPage({
     );
   }
 
-  const assignments = (data ?? []).filter((row) => {
+  const assignments = sortByMostRecentMonthFirst((data ?? []).filter((row) => {
     const status = (row.status ?? "").trim().toLowerCase();
     const passStatus =
       statusFilter === "all"
@@ -895,7 +896,7 @@ export default async function TaskPage({
     }
 
     return true;
-  });
+  }));
 
   return (
     <TaskPageContent
