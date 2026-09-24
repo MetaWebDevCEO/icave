@@ -14,6 +14,15 @@ import {
 } from "@supabase/supabase-js";
 import { isSchemaMismatchPostgres } from "@/lib/submission-files";
 import { formatCalendarDateShort } from "@/lib/calendar-date";
+import {
+  QuickAsignarFila,
+  type MatrizOption as MatrizOpt,
+  type SupervisorOption,
+} from "./quick-asignar-fila";
+import {
+  ArchiveroMatrizList,
+  type FilaMatriz,
+} from "./archivero-matriz-list";
 
 type MatrizRow = {
   id?: string | number | null;
@@ -25,6 +34,35 @@ type MatrizRow = {
 
 const SELECT_MATRIX_EXTENDED = "id, created_at, actividad, frecuencia";
 const SELECT_MATRIX_BASE = "id, actividad, frecuencia";
+
+const DEFAULT_AVATAR_BUCKET = "avatars";
+const AVATAR_EXPIRES_SECONDS = 60 * 60;
+
+function normalizeEmail(v: string | null | undefined): string {
+  return typeof v === "string" ? v.trim().toLowerCase() : "";
+}
+
+function deriveDisplayName(
+  email: string | null | undefined,
+  metadata: Record<string, unknown>
+): string {
+  const metadataName =
+    typeof metadata.full_name === "string"
+      ? metadata.full_name
+      : typeof metadata.display_name === "string"
+        ? metadata.display_name
+        : typeof metadata.name === "string"
+          ? metadata.name
+          : "";
+  if (metadataName.trim()) return metadataName.trim();
+  if (!email) return "Sin nombre";
+  const localPart = email.split("@")[0] ?? "supervisor";
+  return localPart
+    .replace(/[._-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (l) => l.toUpperCase());
+}
 
 export default async function ArchiveroPage() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -101,26 +139,202 @@ export default async function ArchiveroPage() {
     const frecuencia = typeof frecuenciaRaw === "string" ? frecuenciaRaw.trim() : "";
     const created_at = typeof r.created_at === "string" ? r.created_at : null;
     const existing = byId.get(numericId);
-    if (!existing || (actividad.length > 0 && existing.actividad.length === 0) || (frecuencia.length > 0 && existing.frecuencia.length === 0)) {
-      byId.set(numericId, { id: numericId, actividad, frecuencia, created_at: existing?.created_at ?? created_at });
+    if (
+      !existing ||
+      (actividad.length > 0 && existing.actividad.length === 0) ||
+      (frecuencia.length > 0 && existing.frecuencia.length === 0)
+    ) {
+      byId.set(numericId, {
+        id: numericId,
+        actividad,
+        frecuencia,
+        created_at: existing?.created_at ?? created_at,
+      });
     }
   }
 
-  const safeRows: { id: string; displayId: number; actividad: string; frecuencia: string; created_at: string | null }[] = [];
+  const safeRows: FilaMatriz[] = [];
+  const matrizOptions: MatrizOpt[] = [];
   for (let i = 1; i <= 64; i++) {
     const row = byId.get(i);
+    const actividad = row?.actividad ?? "";
     safeRows.push({
       id: `matriz-${i}`,
       displayId: i,
-      actividad: row?.actividad ?? "",
+      actividad,
       frecuencia: row?.frecuencia ?? "",
       created_at: row?.created_at ?? null,
     });
+    matrizOptions.push({ id: i, actividad });
   }
 
   const total = safeRows.length;
   const definidas = safeRows.filter((r) => r.actividad.length > 0).length;
   const vacias = safeRows.filter((r) => r.actividad.length === 0).length;
+
+  // ------------------------------------------------------------------
+  // Supervisores para el diálogo "Asignar" (mismo criterio estricto que
+  // la vista /platform/revisor/supervisores: join user_roles.role_code
+  // con roles.code SÓLO de filas con roles.id = 6 o roles.name = Supervisor
+  // ------------------------------------------------------------------
+  const supervisores: SupervisorOption[] = await (async () => {
+    if (!admin) return [];
+
+    const catalogQ = await admin.from("roles").select("id, code, name").limit(50);
+    const catalog = (catalogQ.data ?? []) as { id?: unknown; code?: unknown; name?: unknown }[];
+    const supervisorCodes = new Set<string>();
+    for (const r of catalog) {
+      const idNum =
+        typeof r.id === "number" ? r.id : typeof r.id === "string" ? Number(r.id) : NaN;
+      const nameStr = typeof r.name === "string" ? r.name.trim().toLowerCase() : "";
+      const codeStr = typeof r.code === "string" ? r.code.trim() : String(r.code ?? "");
+      if ((idNum === 6 || nameStr === "supervisor") && codeStr) {
+        supervisorCodes.add(codeStr);
+        supervisorCodes.add(codeStr.toLowerCase());
+      }
+    }
+
+    const urQ = await admin
+      .from("user_roles")
+      .select("user_id, role_code, created_at, updated_at")
+      .limit(1000);
+    const urRows = (urQ.data ?? []) as { user_id?: unknown; role_code?: unknown }[];
+    const supervisorUserIds = new Set<string>();
+    for (const row of urRows) {
+      const uid = typeof row.user_id === "string" ? row.user_id.trim() : "";
+      if (!uid) continue;
+      const rc = row.role_code;
+      const rcStr =
+        typeof rc === "string" ? rc.trim() : typeof rc === "number" ? String(rc) : "";
+      if (!rcStr) continue;
+      if (supervisorCodes.has(rcStr) || supervisorCodes.has(rcStr.toLowerCase())) {
+        supervisorUserIds.add(uid);
+      }
+    }
+
+    let authUsers: Array<{
+      id: string;
+      email?: string | null;
+      user_metadata?: Record<string, unknown> | null;
+    }> = [];
+    try {
+      const listed = await admin.auth.admin.listUsers({ page: 1, perPage: 1000 });
+      const maybe = (listed as unknown as { data?: { users?: unknown } | null })?.data?.users;
+      authUsers = (maybe as typeof authUsers) ?? [];
+    } catch {
+      authUsers = [];
+    }
+
+    type Pre = {
+      id: string;
+      email: string | null;
+      displayName: string;
+      avatarBucket: string;
+      avatarPath: string;
+      fallbackUrl: string | null;
+    };
+    const pre: Pre[] = [];
+    for (const u of authUsers) {
+      if (!supervisorUserIds.has(u.id)) continue;
+      const meta =
+        u.user_metadata && typeof u.user_metadata === "object"
+          ? (u.user_metadata as Record<string, unknown>)
+          : {};
+      const bucket =
+        typeof meta.avatar_bucket === "string" && meta.avatar_bucket.trim()
+          ? meta.avatar_bucket.trim()
+          : DEFAULT_AVATAR_BUCKET;
+      const path =
+        typeof meta.avatar_path === "string" && meta.avatar_path.trim()
+          ? meta.avatar_path.trim()
+          : "";
+      const fb =
+        typeof (meta as { avatar_url?: unknown }).avatar_url === "string"
+          ? (meta as { avatar_url: string }).avatar_url
+          : typeof (meta as { picture?: unknown }).picture === "string"
+            ? (meta as { picture: string }).picture
+            : null;
+      pre.push({
+        id: u.id,
+        email: u.email ?? null,
+        displayName: deriveDisplayName(u.email ?? null, meta),
+        avatarBucket: bucket,
+        avatarPath: path,
+        fallbackUrl: fb ?? null,
+      });
+    }
+    pre.sort((a, b) => a.displayName.localeCompare(b.displayName));
+
+    const resolved = await Promise.all(
+      pre.map(async (s) => {
+        if (!s.avatarPath) return s.fallbackUrl ?? null;
+        try {
+          const r = await admin.storage
+            .from(s.avatarBucket)
+            .createSignedUrl(s.avatarPath, AVATAR_EXPIRES_SECONDS);
+          if (r?.data?.signedUrl && !r.error) return r.data.signedUrl;
+        } catch {
+          /* ignore */
+        }
+        return s.fallbackUrl ?? null;
+      })
+    );
+
+    return pre.map((s, i) => ({
+      id: s.id,
+      email: s.email,
+      displayName: s.displayName,
+      avatarUrl: resolved[i] ?? null,
+      userId: s.id,
+    }));
+  })();
+
+  // ------------------------------------------------------------------
+  // Paso 7: Supervisores ASIGNADOS DE FORMA PERSISTENTE por fila de matriz.
+  // Vienen de la tabla `matriz_supervisor_asignado` (PK matriz_fila_id).
+  // Se reutiliza al recargar, cerrar sesión, cambiar de mes, etc.
+  // ------------------------------------------------------------------
+  type AsignadoRow = {
+    matriz_fila_id: unknown;
+    supervisor_user_id: unknown;
+  };
+  const initialSupervisoresAsignados: Map<number, SupervisorOption> =
+    admin
+      ? await (async () => {
+          try {
+            const q = await admin
+              .from("matriz_supervisor_asignado")
+              .select("matriz_fila_id, supervisor_user_id")
+              .limit(1000);
+            if (q.error) return new Map<number, SupervisorOption>();
+            const rows = (q.data ?? []) as AsignadoRow[];
+            const byUid = new Map<string, SupervisorOption>();
+            for (const s of supervisores) {
+              byUid.set(s.userId ?? s.id, s);
+            }
+            const map = new Map<number, SupervisorOption>();
+            for (const row of rows) {
+              const filaNum =
+                typeof row.matriz_fila_id === "number"
+                  ? row.matriz_fila_id
+                  : typeof row.matriz_fila_id === "string"
+                    ? Number(row.matriz_fila_id)
+                    : NaN;
+              if (!Number.isInteger(filaNum)) continue;
+              const uid =
+                typeof row.supervisor_user_id === "string"
+                  ? row.supervisor_user_id
+                  : "";
+              if (!uid) continue;
+              const sup = byUid.get(uid);
+              if (sup) map.set(filaNum, sup);
+            }
+            return map;
+          } catch {
+            return new Map<number, SupervisorOption>();
+          }
+        })()
+      : new Map<number, SupervisorOption>();
 
   return (
     <PlatformShell
@@ -158,96 +372,18 @@ export default async function ArchiveroPage() {
         </div>
 
         <div className="mt-3 flex min-h-0 flex-1 flex-col">
-          <div className="shrink-0 pb-3">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <div className="text-sm font-semibold text-zinc-950 dark:text-zinc-50">
-                  Matriz de Control
-                </div>
-                <div className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-                  Seguimiento de actividades desde la tabla
-                  <span className="ml-1 font-mono text-[11px] text-zinc-700 dark:text-zinc-300">matriz</span>
-                  .
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  className="inline-flex h-9 items-center justify-center rounded-md border border-zinc-200 bg-white px-3 text-xs font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-800 dark:bg-black dark:text-zinc-300 dark:hover:bg-zinc-900"
-                >
-                  Exportar
-                </button>
-                <button
-                  type="button"
-                  className="inline-flex h-9 items-center justify-center rounded-md bg-zinc-900 px-3 text-xs font-medium text-white hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-950 dark:hover:bg-zinc-200"
-                >
-                  Nueva fila
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <div className="min-h-0 flex-1 overflow-hidden rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
-            <div className="grid grid-cols-12 sticky top-0 z-10 border-b border-zinc-200 bg-zinc-50 px-5 py-3 text-xs font-semibold text-zinc-600 shadow-[0_1px_0_rgba(0,0,0,0.04)] dark:border-zinc-800 dark:bg-zinc-900/60 dark:text-zinc-400">
-              <div className="col-span-9">Actividad</div>
-              <div className="col-span-2">Creada</div>
-              <div className="col-span-1 text-right">Acciones</div>
-            </div>
-
-            <div className="max-h-[calc(100%-3rem)] overflow-y-auto divide-y divide-zinc-100 dark:divide-zinc-900">
-              {listError && (
-                <div className="px-5 py-8 text-sm text-red-700 dark:text-red-300">
-                  {listError.message}
-                </div>
-              )}
-              {!listError && safeRows.length === 0 && (
-                <div className="px-5 py-10 text-center text-sm text-zinc-500 dark:text-zinc-400">
-                  La tabla <span className="font-mono">matriz</span> está vacía.
-                </div>
-              )}
-              {!listError &&
-                safeRows.map((r) => {
-                  const createdLabel = r.created_at
-                    ? formatCalendarDateShort(r.created_at)
-                    : "—";
-                  return (
-                    <div
-                      key={r.id}
-                      className="grid grid-cols-12 items-center gap-3 px-5 py-4 text-sm text-zinc-700 dark:text-zinc-300"
-                    >
-                      <div className="col-span-9 truncate font-medium leading-snug text-zinc-950 dark:text-zinc-50" title={r.actividad}>
-                        {r.actividad.length > 0 ? r.actividad : "—"}
-                      </div>
-                      <div className="col-span-2 truncate text-zinc-600 dark:text-zinc-400">
-                        {createdLabel}
-                      </div>
-                      <div className="col-span-1 flex justify-end gap-2">
-                        <button
-                          type="button"
-                          className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-100 dark:border-zinc-800 dark:bg-black dark:text-zinc-300 dark:hover:bg-zinc-900"
-                          aria-label="Editar"
-                        >
-                          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" className="h-4 w-4">
-                            <path d="M12 20h9" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-                            <path d="M16.5 3.5a2.121 2.121 0 1 1 3 3L7 19l-4 1 1-4L16.5 3.5Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                          </svg>
-                        </button>
-                        <button
-                          type="button"
-                          className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-100 dark:border-zinc-800 dark:bg-black dark:text-zinc-300 dark:hover:bg-zinc-900"
-                          aria-label="Ver"
-                        >
-                          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" className="h-4 w-4">
-                            <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z" stroke="currentColor" strokeWidth="2"/>
-                            <circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="2"/>
-                          </svg>
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
-            </div>
-          </div>
+          <ArchiveroMatrizList
+            safeRows={safeRows}
+            listErrorMessage={listError?.message ?? null}
+            currentUserEmail={user.email ?? undefined}
+            currentUserId={user.id}
+            matrizOptions={matrizOptions}
+            supervisores={supervisores}
+            definidas={definidas}
+            vacias={vacias}
+            total={total}
+            initialSupervisoresAsignados={initialSupervisoresAsignados}
+          />
         </div>
       </div>
     </PlatformShell>
