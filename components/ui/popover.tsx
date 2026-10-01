@@ -147,14 +147,15 @@ export function Popover({
       ref={contentRef}
       style={{
         position: "fixed",
-        top: pos?.top ?? -9999,
-        left: pos?.left ?? -9999,
-        visibility: pos ? "visible" : "hidden",
+        top: pos ? pos.top : 0,
+        left: pos ? pos.left : 0,
+        visibility: "visible",
       }}
       className={cn(
-        "z-[9999]",
+        "z-[99999]",
         "rounded-md border border-zinc-200 bg-white p-0 text-zinc-900 shadow-[0_10px_38px_-10px_rgba(15,23,42,0.2)]",
         "dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100 dark:shadow-[0_10px_40px_-10px_rgba(0,0,0,0.6)]",
+        !pos ? "opacity-0 pointer-events-none" : "",
         className
       )}
     >
@@ -163,7 +164,7 @@ export function Popover({
   )
 
   return (
-    <div ref={containerRef} className="relative inline-block w-full">
+    <div ref={containerRef} className="relative block w-full">
       <div ref={anchorRef} onClick={() => setOpen(!open)}>
         {trigger}
       </div>

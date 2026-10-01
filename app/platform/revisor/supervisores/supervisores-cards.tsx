@@ -1,6 +1,8 @@
 "use client";
 
+import * as React from "react";
 import { useRouter } from "next/navigation";
+import { Avatar } from "@/components/ui/avatar";
 
 export type SupervisorCardData = {
   id: string;
@@ -68,13 +70,6 @@ function progresoPorcentaje(s: SupervisorCardData["stats"]): number {
   return Math.round((peso / total) * 100);
 }
 
-function getInitials(name: string): string {
-  const parts = name.trim().split(/\s+/).filter(Boolean);
-  if (parts.length === 0) return "SU";
-  if (parts.length === 1) return parts[0]!.slice(0, 2).toUpperCase();
-  return (parts[0]![0]! + parts[parts.length - 1]![0]!).toUpperCase();
-}
-
 function StatPill({
   label,
   value,
@@ -107,20 +102,12 @@ function SupervisorCard({ s }: { s: SupervisorCardData }) {
     <div className="bg-white rounded-xl shadow-sm border border-zinc-200/80 p-5 flex flex-col gap-4 hover:shadow-md hover:border-zinc-300 transition-all">
       <div className="flex items-start gap-3">
         <div className="flex-shrink-0">
-          {s.avatarUrl ? (
-            <img
-              src={s.avatarUrl}
-              alt={s.displayName}
-              className="w-12 h-12 rounded-full object-cover ring-1 ring-zinc-200"
-              onError={(e) => {
-                (e.currentTarget as HTMLImageElement).style.display = "none";
-              }}
-            />
-          ) : (
-            <div className="w-12 h-12 rounded-full bg-zinc-100 flex items-center justify-center text-zinc-600 font-medium text-sm ring-1 ring-zinc-200">
-              {getInitials(s.displayName)}
-            </div>
-          )}
+          <Avatar
+            src={s.avatarUrl}
+            alt={s.displayName}
+            initials={s.displayName || (s.email ?? undefined)}
+            className="w-12 h-12 text-base ring-1 ring-zinc-200 dark:ring-zinc-200"
+          />
         </div>
         <div className="flex-1 min-w-0">
           <h3 className="font-semibold text-zinc-900 text-sm truncate">
@@ -189,7 +176,7 @@ export function SupervisoresCards({ supervisores, monthValue, monthOptions }: Pr
           </h3>
           <p className="text-xs text-zinc-500 max-w-sm">
             Intenta cambiar el mes del filtro o verifica que existan usuarios con el rol
-            &ldquo;Supervisor&rdquo; asignado en la tabla de roles.
+            Supervisor asignado en la tabla de roles.
           </p>
         </div>
       </div>

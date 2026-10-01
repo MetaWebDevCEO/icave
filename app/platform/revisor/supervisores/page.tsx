@@ -4,9 +4,10 @@ import { createClient as createSupabaseAdminClient } from "@supabase/supabase-js
 import { redirect } from "next/navigation";
 import {
   buildSections,
-  resolveRoleForUser,
+  strongCheckIsRevisor,
   type UserRole,
 } from "@/lib/platform-roles";
+import { isSchemaMismatchPostgres } from "@/lib/submission-files";
 import {
   SupervisoresCards,
   type SupervisorCardData,
@@ -34,12 +35,21 @@ const MONTH_LABELS = [
   "Diciembre",
 ];
 
+const CANONICAL_SUPERVISOR_ROLE_CODES = new Set<string>([
+  "2",
+  "supervisor",
+  "usuario",
+  "admin",
+  "administrador",
+  "sup",
+  "s",
+]);
+
 function pad2(n: number) {
   return n < 10 ? `0${n}` : `${n}`;
 }
 
 function getMonthRange(year: number, month0Idx: number): { startISO: string; endISO: string } {
-  // month0Idx: 0 = Enero ... 11 = Diciembre
   const start = new Date(Date.UTC(year, month0Idx, 1, 0, 0, 0, 0));
   const end = new Date(Date.UTC(year, month0Idx + 1, 1, 0, 0, 0, 0));
   return {
@@ -49,7 +59,6 @@ function getMonthRange(year: number, month0Idx: number): { startISO: string; end
 }
 
 function monthKey(year: number, month0Idx: number) {
-  // Formato "YYYY-MM"; month0Idx -> MM con 0..11 -> MM human-readable (1..12)
   return `${year}-${pad2(month0Idx + 1)}`;
 }
 
@@ -58,7 +67,7 @@ function parseMonthKey(v: string | undefined): { year: number; month0Idx: number
   const match = /^(\d{4})-(\d{1,2})$/.exec(v.trim());
   if (!match) return null;
   const year = Number(match[1]);
-  let mm = Number(match[2]);
+  const mm = Number(match[2]);
   if (!Number.isFinite(year) || !Number.isFinite(mm)) return null;
   const month0Idx = Math.min(11, Math.max(0, mm - 1));
   if (year < 2000 || year > 2100) return null;
@@ -67,13 +76,11 @@ function parseMonthKey(v: string | undefined): { year: number; month0Idx: number
 
 function buildMonthOptions(currentYear: number): { value: string; label: string }[] {
   const opts: { value: string; label: string }[] = [];
-  // 12 meses del año en curso + los 12 del año anterior (para rango)
   for (let y = currentYear + 1; y >= currentYear - 1; y--) {
     for (let m = 11; m >= 0; m--) {
       opts.push({ value: monthKey(y, m), label: `${MONTH_LABELS[m]} ${y}` });
     }
   }
-  // Colocar primero el más reciente arriba
   return opts;
 }
 
@@ -114,7 +121,11 @@ function classifyStatus(raw: unknown): "completadas" | "enCurso" | "pendientes" 
     return "enCurso";
   }
   if (
-    s.includes("open") || s.includes("nueva") || s.includes("nuevo") || s.includes("espera")) {
+    s.includes("open") ||
+    s.includes("nueva") ||
+    s.includes("nuevo") ||
+    s.includes("espera")
+  ) {
     if (s.includes("pend")) return "pendientes";
     return "enCurso";
   }
@@ -143,33 +154,132 @@ function fallsInMonth(
   return false;
 }
 
-function getSearchParam(sp: Record<string, string | string[] | undefined>, key: string) {
+function getSearchParam(
+  sp: Record<string, string | string[] | undefined>,
+  key: string
+) {
   const value = sp[key];
   return typeof value === "string" ? value : undefined;
 }
 
-export default async function SupervisoresPage({ searchParams }: { searchParams: SearchParams }) {
+function metadataLooksSupervisor(meta: unknown): boolean {
+  if (!meta || typeof meta !== "object") return false;
+  const m = meta as Record<string, unknown>;
+  const role = typeof m.role === "string" ? m.role.trim().toLowerCase() : "";
+  const rol = typeof m.rol === "string" ? m.rol.trim().toLowerCase() : "";
+  const rolId =
+    typeof m.rol_id === "string"
+      ? m.rol_id.trim()
+      : typeof m.rol_id === "number"
+        ? String(m.rol_id)
+        : "";
+  const roleId =
+    typeof m.role_id === "string"
+      ? m.role_id.trim()
+      : typeof m.role_id === "number"
+        ? String(m.role_id)
+        : "";
+
+  if (role === "supervisor" || rol === "supervisor") return true;
+  if (roleId === "2" || rolId === "2") return true;
+  if (roleId === "6" || rolId === "6") return true;
+  return false;
+}
+
+type CatalogRoleRow = {
+  id?: unknown;
+  code?: unknown;
+  name?: unknown;
+};
+
+type UserRoleRow = {
+  user_id?: unknown;
+  role_code?: unknown;
+};
+
+type ProfileRow = {
+  id?: unknown;
+  user_id?: unknown;
+  role_code?: unknown;
+  rol?: unknown;
+  role?: unknown;
+  email?: unknown;
+};
+
+type AsignacionRow = {
+  assigned_to_email?: unknown;
+  status?: unknown;
+  created_at?: unknown;
+  due_at?: unknown;
+  submitted_at?: unknown;
+};
+
+type AuthUserLite = {
+  id: string;
+  email?: string | null;
+  user_metadata?: Record<string, unknown> | null;
+};
+
+export default async function SupervisoresPage({
+  searchParams,
+}: {
+  searchParams: SearchParams;
+}) {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
   const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "";
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
 
   if (
-    !url || !anonKey || url.includes("__REPLACE_ME__") || anonKey.includes("__REPLACE_ME__")) {
-    redirect("/?error=" + encodeURIComponent("Configura Supabase primero (env vars)."));
+    !url ||
+    !anonKey ||
+    url.includes("__REPLACE_ME__") ||
+    anonKey.includes("__REPLACE_ME__")
+  ) {
+    return redirect(
+      "/?error=" + encodeURIComponent("Configura Supabase primero (env vars).")
+    );
   }
 
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
 
-  if (!user) {
-    redirect("/");
+  let user: { id: string; email?: string | null; user_metadata?: unknown } | null =
+    null;
+  try {
+    const resp = await supabase.auth.getUser();
+    if (!resp.error && resp.data?.user) {
+      user = resp.data.user;
+    } else if (resp.error) {
+      console.warn("[supervisores] getUser error:", resp.error.message);
+    }
+  } catch (e) {
+    console.warn(
+      "[supervisores] getUser exception:",
+      e instanceof Error ? e.message : String(e)
+    );
   }
 
-  const role: UserRole = await resolveRoleForUser(supabase, user.id);
+  if (!user) {
+    return redirect("/");
+  }
+
+  let role: UserRole = "usuario";
+  try {
+    const strong = await strongCheckIsRevisor(supabase, user.id, {
+      email: user.email ?? null,
+    });
+    role = strong.decidedRole;
+  } catch (e) {
+    console.warn(
+      "[supervisores] strongCheckIsRevisor exception:",
+      e instanceof Error ? e.message : String(e)
+    );
+    role = "usuario";
+  }
   if (role !== "revisor") {
-    redirect("/platform?error=" + encodeURIComponent("Esta sección es sólo para revisores."));
+    return redirect(
+      "/platform?error=" +
+        encodeURIComponent("Esta sección es sólo para revisores.")
+    );
   }
   const sections = buildSections(role);
 
@@ -187,51 +297,56 @@ export default async function SupervisoresPage({ searchParams }: { searchParams:
   const { startISO, endISO } = getMonthRange(selectedYear, selectedMonth0);
   const monthLabel = `${MONTH_LABELS[selectedMonth0]} ${selectedYear}`;
 
-  if (!serviceKey || serviceKey.includes("__REPLACE_ME__")) {
-    return (
-      <PlatformShell
-        sections={sections}
-        currentUserId={user.id}
-        currentUserEmail={user.email ?? undefined}
-      >
-        <div className="mx-auto max-w-6xl px-4 py-6">
-          <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-            Falta configurar <code className="font-mono">SUPABASE_SERVICE_ROLE_KEY</code> en{" "}
-            <code className="font-mono">.env.local</code> para listar supervisores.
-          </div>
-        </div>
-      </PlatformShell>
+  const admin =
+    serviceKey && !serviceKey.includes("__REPLACE_ME__")
+      ? createSupabaseAdminClient(url, serviceKey, {
+          auth: { persistSession: false, autoRefreshToken: false },
+        })
+      : null;
+
+  console.debug(
+    "[supervisores:debug] admin client available?",
+    Boolean(admin),
+    "| user.id:",
+    user.id,
+    "| month:",
+    monthValue
+  );
+
+  const queryClient = admin ?? supabase;
+
+  let catalogRoles: CatalogRoleRow[] = [];
+  try {
+    const q = await queryClient
+      .from("roles")
+      .select("id, code, name")
+      .limit(50);
+    catalogRoles = (q.data ?? []) as CatalogRoleRow[];
+    if (q.error && !isSchemaMismatchPostgres(q.error)) {
+      console.warn("[supervisores] catalogRoles error:", q.error.message);
+    }
+  } catch (e) {
+    console.warn(
+      "[supervisores] catalogRoles exception:",
+      e instanceof Error ? e.message : String(e)
     );
   }
 
-  const admin = createSupabaseAdminClient(url, serviceKey, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
+  console.debug(
+    "[supervisores:debug] catalogRoles.length =",
+    catalogRoles.length
+  );
 
-  const catalogRolesQuery = await admin
-    .from("roles")
-    .select("id, code, name")
-    .limit(50);
-
-  const catalogRoles = (catalogRolesQuery.data ?? []) as {
-    id?: unknown;
-    code?: unknown;
-    name?: unknown;
-  }[];
-
-  // ------------------------------------------------------------------
-  // Paso 1: Obtener códigos de rol EXCLUSIVAMENTE desde catálogo `roles`.
-  // Un código (roles.code) se considera "Supervisor" sólo si:
-  //   - roles.id = 6  (fila de la imagen), o
-  //   - roles.name = "Supervisor"
-  // Así evitamos que el código "USUARIO" (id=2 del catálogo) sea tratado
-  // como Supervisor aunque en user_roles aparezca como "2" genérico.
-  // ------------------------------------------------------------------
-  let supervisorRoleCodes: Set<string> = new Set();
+  let supervisorRoleCodes: Set<string> = new Set(CANONICAL_SUPERVISOR_ROLE_CODES);
   for (const r of catalogRoles) {
     const idNum =
-      typeof r.id === "number" ? r.id : typeof r.id === "string" ? Number(r.id) : NaN;
-    const nameStr = typeof r.name === "string" ? r.name.trim().toLowerCase() : "";
+      typeof r.id === "number"
+        ? r.id
+        : typeof r.id === "string"
+          ? Number(r.id)
+          : NaN;
+    const nameStr =
+      typeof r.name === "string" ? r.name.trim().toLowerCase() : "";
     const codeStr =
       typeof r.code === "string" ? r.code.trim() : String(r.code ?? "");
     const esFilaSupervisor = idNum === 6 || nameStr === "supervisor";
@@ -242,17 +357,53 @@ export default async function SupervisoresPage({ searchParams }: { searchParams:
     }
   }
 
-  const userRolesQuery = await admin
-    .from("user_roles")
-    .select("user_id, role_code, created_at, updated_at")
-    .limit(1000);
+  console.debug(
+    "[supervisores:debug] supervisorRoleCodes =",
+    Array.from(supervisorRoleCodes)
+  );
 
-  const userRoleRows = (userRolesQuery.data ?? []) as {
-    user_id?: unknown;
-    role_code?: unknown;
-  }[];
+  let userRoleRows: UserRoleRow[] = [];
+  try {
+    const q = await queryClient
+      .from("user_roles")
+      .select("user_id, role_code, created_at, updated_at")
+      .limit(1000);
+    userRoleRows = (q.data ?? []) as UserRoleRow[];
+    if (q.error && !isSchemaMismatchPostgres(q.error)) {
+      console.warn("[supervisores] userRoles error:", q.error.message);
+    }
+  } catch (e) {
+    console.warn(
+      "[supervisores] userRoles exception:",
+      e instanceof Error ? e.message : String(e)
+    );
+  }
+  console.debug(
+    "[supervisores:debug] userRoleRows.length =",
+    userRoleRows.length
+  );
+
+  let profileRows: ProfileRow[] = [];
+  try {
+    const q = await queryClient
+      .from("profiles")
+      .select("id, user_id, role_code, rol, role, email")
+      .limit(1000);
+    profileRows = (q.data ?? []) as ProfileRow[];
+    if (q.error && !isSchemaMismatchPostgres(q.error)) {
+      console.warn("[supervisores] profiles error:", q.error.message);
+    }
+  } catch (e) {
+    /* profiles table optional — schema cache / no table es fine */
+  }
+  console.debug(
+    "[supervisores:debug] profileRows.length =",
+    profileRows.length
+  );
 
   const supervisorUserIds = new Set<string>();
+  const supervisorEmails = new Set<string>();
+
   for (const row of userRoleRows) {
     const uid = typeof row.user_id === "string" ? row.user_id.trim() : "";
     if (!uid) continue;
@@ -274,39 +425,127 @@ export default async function SupervisoresPage({ searchParams }: { searchParams:
     }
   }
 
-  let authUsers: Array<{
-    id: string;
-    email?: string | null;
-    user_metadata?: Record<string, unknown> | null;
-  }> = [];
-  try {
-    const listed = await admin.auth.admin.listUsers({ page: 1, perPage: 1000 });
-    const users = (listed as unknown as { data?: { users?: unknown } | null })?.data?.users;
-    authUsers = (users as typeof authUsers) ?? [];
-  } catch {
-    authUsers = [];
+  for (const p of profileRows) {
+    const uid =
+      typeof p.user_id === "string"
+        ? p.user_id.trim()
+        : typeof p.id === "string"
+          ? p.id.trim()
+          : "";
+    if (!uid) continue;
+
+    const fields = [p.role_code, p.rol, p.role];
+    for (const f of fields) {
+      const rcStr =
+        typeof f === "string"
+          ? f.trim()
+          : typeof f === "number"
+            ? String(f)
+            : "";
+      if (!rcStr) continue;
+      const matches =
+        supervisorRoleCodes.has(rcStr) ||
+        supervisorRoleCodes.has(rcStr.toLowerCase());
+      if (matches) {
+        supervisorUserIds.add(uid);
+        const email = normalizeEmail(
+          typeof p.email === "string" ? p.email : null
+        );
+        if (email) supervisorEmails.add(email);
+        break;
+      }
+    }
   }
 
-  const asignacionesQuery = await admin
-    .from("asignaciones")
-    .select("assigned_to_email, status, created_at, due_at, submitted_at")
-    .limit(5000);
+  // auth.users: intentamos listUsers + fallback por IDs de user_roles + emails
+  let authUsers: AuthUserLite[] = [];
+  if (admin) {
+    try {
+      const listed = await (admin.auth as unknown as {
+        admin: {
+          listUsers?: (args: {
+            page: number;
+            perPage: number;
+          }) => Promise<{ data?: { users?: Array<unknown> } | null }>;
+          getUserById?: (
+            id: string
+          ) => Promise<{ data?: { user?: unknown } | null; error?: unknown | null }>;
+        };
+      }).admin;
+      const listResult = await listed?.listUsers?.({
+        page: 1,
+        perPage: 1000,
+      });
+      const users = listResult?.data?.users as Array<unknown> | undefined;
+      if (Array.isArray(users) && users.length > 0) {
+        authUsers = (users as AuthUserLite[]) ?? [];
+      } else {
+        // Fallback: getUserById en lote sobre user_roles.user_id
+        const ids = Array.from(supervisorUserIds).slice(0, 100);
+        const resolved: AuthUserLite[] = [];
+        for (const uid of ids) {
+          try {
+            const r = await listed?.getUserById?.(uid);
+            const u = r?.data?.user as AuthUserLite | undefined;
+            if (u?.id) resolved.push(u);
+          } catch {
+            /* ignore */
+          }
+        }
+        authUsers = resolved;
+      }
+    } catch (e) {
+      console.warn(
+        "[supervisores] auth.users fallback:",
+        e instanceof Error ? e.message : String(e)
+      );
+      authUsers = [];
+    }
+  } else {
+    console.warn(
+      "[supervisores] Sin Service Role Key → no podemos listar auth.users. " +
+        "Se usan solo fuentes: user_roles, profiles, asignaciones emails."
+    );
+  }
+  console.debug(
+    "[supervisores:debug] authUsers.length =",
+    authUsers.length
+  );
 
-  const asignacionesRows = (asignacionesQuery.data ?? []) as {
-    assigned_to_email?: unknown;
-    status?: unknown;
-    created_at?: unknown;
-    due_at?: unknown;
-    submitted_at?: unknown;
-  }[];
+  for (const u of authUsers) {
+    if (metadataLooksSupervisor(u.user_metadata)) {
+      supervisorUserIds.add(u.id);
+      const email = normalizeEmail(u.email);
+      if (email) supervisorEmails.add(email);
+    }
+  }
+
+  let asignacionesRows: AsignacionRow[] = [];
+  try {
+    const q = await queryClient
+      .from("asignaciones")
+      .select("assigned_to_email, status, created_at, due_at, submitted_at")
+      .limit(5000);
+    asignacionesRows = (q.data ?? []) as AsignacionRow[];
+    if (q.error && !isSchemaMismatchPostgres(q.error)) {
+      console.warn("[supervisores] asignaciones error:", q.error.message);
+    }
+  } catch (e) {
+    console.warn(
+      "[supervisores] asignaciones exception:",
+      e instanceof Error ? e.message : String(e)
+    );
+  }
+  console.debug(
+    "[supervisores:debug] asignacionesRows.length (total) =",
+    asignacionesRows.length
+  );
 
   const statsByEmail = new Map<
     string,
     { completadas: number; enCurso: number; pendientes: number }
   >();
   for (const row of asignacionesRows) {
-    // Filtro estricto POR MES: una asignación se incluye sólo si created_at / due_at / submitted_at
-    // cae dentro del rango [startISO, endISO).
     if (!fallsInMonth(row, startISO, endISO)) continue;
 
     const email = normalizeEmail(
@@ -323,6 +562,27 @@ export default async function SupervisoresPage({ searchParams }: { searchParams:
     statsByEmail.set(email, cur);
   }
 
+  console.debug(
+    "[supervisores:debug] statsByEmail.size (en mes) =",
+    statsByEmail.size
+  );
+  if (statsByEmail.size > 0) {
+    for (const [email, st] of statsByEmail.entries()) {
+      console.debug(`[supervisores:debug] stats[${email}]=`, st);
+    }
+  }
+
+  for (const email of statsByEmail.keys()) {
+    supervisorEmails.add(email);
+  }
+
+  console.debug(
+    "[supervisores:debug] supervisorUserIds.size =",
+    supervisorUserIds.size,
+    "| supervisorEmails.size =",
+    supervisorEmails.size
+  );
+
   type PreSupervisor = {
     id: string;
     email: string | null;
@@ -334,15 +594,22 @@ export default async function SupervisoresPage({ searchParams }: { searchParams:
   };
 
   const preSupervisores: PreSupervisor[] = [];
-  for (const u of authUsers) {
-    if (!supervisorUserIds.has(u.id)) continue;
+  const addedEmails = new Set<string>();
+  const addedIds = new Set<string>();
 
-    const emailKey = normalizeEmail(u.email);
-    const stats = statsByEmail.get(emailKey) ?? {
-      completadas: 0,
-      enCurso: 0,
-      pendientes: 0,
-    };
+  for (const u of authUsers) {
+    const email = normalizeEmail(u.email);
+    const byId = supervisorUserIds.has(u.id);
+    const byEmail = email ? supervisorEmails.has(email) : false;
+    if (!byId && !byEmail) continue;
+
+    if (email) addedEmails.add(email);
+    addedIds.add(u.id);
+
+    const stats =
+      email && statsByEmail.has(email)
+        ? statsByEmail.get(email)!
+        : { completadas: 0, enCurso: 0, pendientes: 0 };
 
     const meta =
       u.user_metadata && typeof u.user_metadata === "object"
@@ -375,6 +642,28 @@ export default async function SupervisoresPage({ searchParams }: { searchParams:
     });
   }
 
+  for (const email of supervisorEmails) {
+    if (addedEmails.has(email)) continue;
+    addedEmails.add(email);
+
+    const stats = statsByEmail.get(email) ?? {
+      completadas: 0,
+      enCurso: 0,
+      pendientes: 0,
+    };
+
+    const ghostId = `ghost:${email}`;
+    preSupervisores.push({
+      id: ghostId,
+      email,
+      displayName: deriveDisplayName(email, {}),
+      avatarBucket: DEFAULT_AVATAR_BUCKET,
+      avatarPath: "",
+      fallbackAvatar: null,
+      stats,
+    });
+  }
+
   preSupervisores.sort((a, b) => {
     const an = a.displayName.toLowerCase();
     const bn = b.displayName.toLowerCase();
@@ -383,9 +672,15 @@ export default async function SupervisoresPage({ searchParams }: { searchParams:
     return 0;
   });
 
+  console.debug(
+    "[supervisores:debug] preSupervisores.length =",
+    preSupervisores.length
+  );
+
   const resolvedAvatars: (string | null)[] = await Promise.all(
     preSupervisores.map(async (s) => {
       if (!s.avatarPath) return s.fallbackAvatar ?? null;
+      if (!admin) return s.fallbackAvatar ?? null;
       try {
         const r = await admin.storage
           .from(s.avatarBucket)
@@ -425,7 +720,9 @@ export default async function SupervisoresPage({ searchParams }: { searchParams:
           </div>
           <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
             <div className="text-sm text-zinc-500">
-              <span className="font-semibold text-zinc-800">{supervisores.length}</span>{" "}
+              <span className="font-semibold text-zinc-800">
+                {supervisores.length}
+              </span>{" "}
               supervisor{supervisores.length === 1 ? "" : "es"}
             </div>
           </div>

@@ -4,7 +4,7 @@ import { redirect } from "next/navigation";
 import {
   resolveRoleForUser,
   buildSections,
-  dashboardForRole,
+  strongCheckIsRevisor,
 } from "@/lib/platform-roles";
 
 export default async function PlatformPage() {
@@ -24,7 +24,10 @@ export default async function PlatformPage() {
     redirect("/");
   }
 
-  const role = await resolveRoleForUser(supabase, user.id);
+  const strongCheck = await strongCheckIsRevisor(supabase, user.id, {
+    email: user.email ?? null,
+  });
+  const role = strongCheck.decidedRole;
   const sections = buildSections(role);
 
   return (

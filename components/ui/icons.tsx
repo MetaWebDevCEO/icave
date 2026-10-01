@@ -161,3 +161,10 @@ export const CheckCircle = (p: IconProps) => (
     <polyline points="22 4 12 14.01 9 11.01" />
   </svg>
 );
+
+export const Mail = (p: IconProps) => (
+  <svg {...base(p)}>
+    <rect x="2" y="4" width="20" height="16" rx="2" />
+    <path d="m22 7-10 5L2 7" />
+  </svg>
+);

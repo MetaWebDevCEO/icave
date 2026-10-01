@@ -11,6 +11,7 @@ import {
 import {
   buildSections,
   resolveRoleForUser,
+  strongCheckIsRevisor,
 } from "@/lib/platform-roles";
 import {
   parseSubmissionFiles,
@@ -186,7 +187,10 @@ export default async function RevisorTaskPage({
 
   if (!user) redirect("/");
 
-  const role = await resolveRoleForUser(supabase, user.id);
+  const strongCheck = await strongCheckIsRevisor(supabase, user.id, {
+    email: user.email ?? null,
+  });
+  const role = strongCheck.decidedRole;
 
   if (role !== "revisor") {
     redirect("/platform?error=" + encodeURIComponent("Esta sección es sólo para revisores."));
@@ -397,7 +401,12 @@ export default async function RevisorTaskPage({
     } = await supabase.auth.getUser();
     if (!user) redirect("/");
 
-    const role = await resolveRoleForUser(supabase, user.id);
+    const role = await (async () => {
+      const strong = await strongCheckIsRevisor(supabase, user.id, {
+        email: user.email ?? null,
+      });
+      return strong.decidedRole;
+    })();
     if (role !== "revisor") {
       redirect(`${BASE_PATH}?error=` + encodeURIComponent("No tienes permisos para eliminar."));
     }
@@ -510,7 +519,12 @@ export default async function RevisorTaskPage({
       redirect(`${BASE_PATH}?error=` + encodeURIComponent("Sesión inválida."));
     }
 
-    const role = await resolveRoleForUser(supabase, user.id);
+    const role = await (async () => {
+      const strong = await strongCheckIsRevisor(supabase, user.id, {
+        email: user.email ?? null,
+      });
+      return strong.decidedRole;
+    })();
     if (role !== "revisor") {
       redirect(`${BASE_PATH}?error=` + encodeURIComponent("No tienes permisos para comentar."));
     }

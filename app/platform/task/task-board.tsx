@@ -8,6 +8,7 @@ import {
   parseSubmissionFiles,
   type SubmissionFile,
 } from "@/lib/submission-files";
+import { FileText as DocumentIcon } from "@/components/ui/icons";
 
 const MAX_SUBMISSION_SIZE_BYTES = maxSubmissionSizeBytes();
 const MAX_EVIDENCE_FILES = maxEvidenceFiles();
@@ -441,111 +442,147 @@ export function TaskBoard({
                 </div>
               )}
 
-              {role === "usuario" && (
-                <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-4 dark:border-zinc-800 dark:bg-zinc-900/30">
-                  <div className="text-sm font-medium text-zinc-950 dark:text-zinc-50">
-                    {selectedHasDelivery
-                      ? "Modificar evidencias (PDF)"
-                      : "Subir evidencias (PDF)"}
-                  </div>
-                  <div className="mt-2 text-sm text-zinc-700 dark:text-zinc-300">
-                    Puedes adjuntar hasta {MAX_EVIDENCE_FILES} archivos PDF como
-                    evidencia de cumplimiento (máx. 10 MB cada uno). Si vuelves
-                    a enviar, se reemplazan los archivos anteriores.
-                  </div>
-                  <form action={onSubmit} method="POST" encType="multipart/form-data" className="mt-3 grid gap-3">
-                    <input type="hidden" name="assignment_id" value={selected.id} />
-                    <div className="grid gap-2">
-                      <input
-                        name="files"
-                        type="file"
-                        accept="application/pdf,.pdf"
-                        multiple
-                        required
-                        onChange={(e) => {
-                          const fileList = e.target.files;
-                          const files = fileList ? Array.from(fileList) : [];
-                          if (files.length > MAX_EVIDENCE_FILES) {
-                            setSubmissionSizeError(
-                              `Solo se permiten hasta ${MAX_EVIDENCE_FILES} archivos por entrega. Selecciona menos archivos.`
-                            );
-                            return;
-                          }
-                          const tooBig = files.find(
-                            (f) => f.size > MAX_SUBMISSION_SIZE_BYTES
-                          );
-                          if (tooBig) {
-                            setSubmissionSizeError(
-                              `El archivo ${tooBig.name} supera los 10,000 KB (10 MB). Reduce su tamaño.`
-                            );
-                            return;
-                          }
-                          setSubmissionSizeError(null);
-                        }}
-                        className="block w-full text-sm text-zinc-700 file:mr-4 file:rounded-md file:border file:border-zinc-200 file:bg-white file:px-3 file:py-2 file:text-sm file:font-medium file:text-zinc-900 hover:file:bg-zinc-100 dark:text-zinc-300 dark:file:border-zinc-800 dark:file:bg-black dark:file:text-zinc-100 dark:hover:file:bg-zinc-900"
-                      />
-                      <div className="text-xs text-zinc-500 dark:text-zinc-400">
-                        Formato permitido: PDF. Hasta {MAX_EVIDENCE_FILES}{" "}
-                        archivos. 10,000 KB (10 MB) máximo por archivo.
-                      </div>
-                      {submissionSizeError && (
-                        <div className="text-xs font-medium text-red-700 dark:text-red-300">
-                          {submissionSizeError}
-                        </div>
-                      )}
-                    </div>
-                    <button
-                      type="submit"
-                      disabled={Boolean(submissionSizeError)}
-                      className={[
-                        "inline-flex h-10 items-center justify-center rounded-md bg-zinc-900 px-4 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200",
-                        submissionSizeError
-                          ? "cursor-not-allowed opacity-50 hover:bg-zinc-900 dark:hover:bg-zinc-50"
-                          : "",
-                      ].join(" ")}
-                    >
-                      {selectedHasDelivery || isCompleted(selected.status)
-                        ? "Actualizar entrega"
-                        : "Enviar entrega"}
-                    </button>
-                  </form>
-                </div>
-              )}
+                {role === "usuario" && (
+                  <section>
+                    <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-zinc-500 dark:text-zinc-400">
+                      {selectedHasDelivery ? "Modificar evidencias" : "Subir evidencias"}
+                    </h3>
+                    <div className="mt-3 rounded-2xl border border-zinc-100 bg-zinc-50/60 p-5 dark:border-zinc-900 dark:bg-zinc-900/30">
+                      <p className="text-sm leading-relaxed text-zinc-800 dark:text-zinc-200">
+                        Adjunta hasta {MAX_EVIDENCE_FILES} PDFs como evidencia (máx.
+                        10 MB cada uno). Si vuelves a enviar, se reemplazan los
+                        archivos anteriores.
+                      </p>
 
-              {role === "revisor" &&
-                selected.revisor_id &&
-                selected.revisor_id === currentUserId && (
-                  <div className="rounded-lg border border-red-200 bg-red-50 p-4 dark:border-red-900/40 dark:bg-red-950/30">
-                    <div className="text-sm font-medium text-red-900 dark:text-red-100">
-                      Zona de peligro
+                      <form action={onSubmit} className="mt-4 grid gap-3">
+                        <input
+                          type="hidden"
+                          name="assignment_id"
+                          value={selected.id}
+                        />
+                        <div className="grid gap-2">
+                          <label className="group relative block cursor-pointer rounded-2xl border-2 border-dashed border-zinc-300 bg-white px-4 py-6 text-center transition-colors hover:border-zinc-400 hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950 dark:hover:border-zinc-700 dark:hover:bg-zinc-900/40">
+                            <input
+                              name="files"
+                              type="file"
+                              accept="application/pdf,.pdf"
+                              multiple
+                              required
+                              onChange={(e) => {
+                                const fileList = e.target.files;
+                                const files = fileList
+                                  ? Array.from(fileList)
+                                  : [];
+                                if (files.length > MAX_EVIDENCE_FILES) {
+                                  setSubmissionSizeError(
+                                    `Solo se permiten hasta ${MAX_EVIDENCE_FILES} archivos por entrega. Selecciona menos archivos.`
+                                  );
+                                  return;
+                                }
+                                const tooBig = files.find(
+                                  (f) => f.size > MAX_SUBMISSION_SIZE_BYTES
+                                );
+                                if (tooBig) {
+                                  setSubmissionSizeError(
+                                    `El archivo ${tooBig.name} supera los 10,000 KB (10 MB). Reduce su tamaño.`
+                                  );
+                                  return;
+                                }
+                                const badMime = files.find((f) => {
+                                  const n = (f.name || "").toLowerCase();
+                                  const t = (f.type || "").toLowerCase();
+                                  return (
+                                    !n.endsWith(".pdf") &&
+                                    !t.includes("pdf") &&
+                                    t !== "application/octet-stream"
+                                  );
+                                });
+                                if (badMime) {
+                                  setSubmissionSizeError(
+                                    `El archivo "${badMime.name}" no es un PDF. Selecciona solo archivos .pdf.`
+                                  );
+                                  return;
+                                }
+                                setSubmissionSizeError(null);
+                              }}
+                              className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                            />
+                            <DocumentIcon className="mx-auto h-7 w-7 text-zinc-400 group-hover:text-zinc-600 dark:text-zinc-500 dark:group-hover:text-zinc-300" />
+                            <p className="mt-3 text-sm font-medium text-zinc-800 dark:text-zinc-100">
+                              Haz clic para seleccionar los PDFs
+                            </p>
+                            <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-500">
+                              PDF · hasta {MAX_EVIDENCE_FILES} archivos · 10 MB
+                              máximo cada uno
+                            </p>
+                          </label>
+
+                          {submissionSizeError && (
+                            <p className="mt-2 rounded-xl bg-red-50 px-3 py-2 text-xs font-semibold text-red-800 ring-1 ring-inset ring-red-100 dark:bg-red-950/30 dark:text-red-200 dark:ring-red-900/40">
+                              {submissionSizeError}
+                            </p>
+                          )}
+                        </div>
+
+                        <button
+                          type="submit"
+                          disabled={Boolean(submissionSizeError)}
+                          className={[
+                            "inline-flex h-11 w-full items-center justify-center rounded-xl px-4 text-sm font-semibold text-white shadow-sm transition-colors",
+                            submissionSizeError
+                              ? "cursor-not-allowed bg-zinc-400 hover:bg-zinc-400 dark:bg-zinc-700 dark:hover:bg-zinc-700"
+                              : "bg-zinc-950 hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-950 dark:hover:bg-white",
+                          ].join(" ")}
+                        >
+                          {selectedHasDelivery || isCompleted(selected.status)
+                            ? "Actualizar entrega"
+                            : "Enviar entrega"}
+                        </button>
+                      </form>
                     </div>
-                    <div className="mt-1 text-sm text-red-800 dark:text-red-200">
-                      Elimina esta asignación y su adjunto de forma permanente.
-                    </div>
-                    <form
-                      action={onDelete}
-                      onSubmit={(e) => {
-                        const ok = window.confirm(
-                          "¿Estás seguro de que deseas eliminar esta asignación? Esta acción no se puede deshacer."
-                        );
-                        if (!ok) e.preventDefault();
-                      }}
-                      className="mt-3"
-                    >
-                      <input
-                        type="hidden"
-                        name="assignment_id"
-                        value={selected.id}
-                      />
-                      <button
-                        type="submit"
-                        className="inline-flex h-10 w-full items-center justify-center rounded-md border border-red-200 bg-white px-4 text-sm font-medium text-red-700 hover:bg-red-100 dark:border-red-900/40 dark:bg-black dark:text-red-300 dark:hover:bg-red-950/40"
-                      >
-                        Eliminar asignación
-                      </button>
-                    </form>
-                  </div>
+                  </section>
                 )}
+
+                {role === "revisor" &&
+                  selected.revisor_id &&
+                  selected.revisor_id === currentUserId && (
+                    <section>
+                      <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-red-600 dark:text-red-400">
+                        Zona de peligro
+                      </h3>
+                      <div className="mt-3 rounded-2xl border border-red-200 bg-red-50/60 p-5 dark:border-red-900/40 dark:bg-red-950/20">
+                        <p className="text-sm font-semibold text-red-900 dark:text-red-100">
+                          Eliminar asignación
+                        </p>
+                        <p className="mt-1 text-sm text-red-800/90 dark:text-red-200/90">
+                          Elimina esta actividad y su evidencia de forma
+                          permanente. No se puede deshacer.
+                        </p>
+                        <form
+                          action={onDelete}
+                          onSubmit={(e) => {
+                            const ok = window.confirm(
+                              "¿Estás seguro de que deseas eliminar esta asignación? Esta acción no se puede deshacer."
+                            );
+                            if (!ok) e.preventDefault();
+                          }}
+                          className="mt-4"
+                        >
+                          <input
+                            type="hidden"
+                            name="assignment_id"
+                            value={selected.id}
+                          />
+                          <button
+                            type="submit"
+                            className="inline-flex h-10 w-full items-center justify-center rounded-md border border-red-200 bg-white px-4 text-sm font-medium text-red-700 hover:bg-red-100 dark:border-red-900/40 dark:bg-black dark:text-red-300 dark:hover:bg-red-950/40"
+                          >
+                            Eliminar asignación
+                          </button>
+                        </form>
+                      </div>
+                    </section>
+                  )}
             </div>
           </div>
         </div>
