@@ -914,6 +914,10 @@ export function ArchiveroMatrizList(props: Props) {
                             src={sup.avatarUrl}
                             alt={sup.displayName}
                             className="h-6 w-6 rounded-full ring-1 ring-zinc-200 object-cover"
+                            referrerPolicy="no-referrer"
+                            crossOrigin="anonymous"
+                            loading="lazy"
+                            decoding="async"
                             onError={(e) => {
                               (
                                 e.currentTarget as HTMLImageElement

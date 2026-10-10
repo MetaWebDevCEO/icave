@@ -76,6 +76,42 @@ const SidebarSectionBlock = memo(function SidebarSectionBlock({
   );
 });
 
+function UserAvatar({
+  avatarUrl,
+  initials,
+  displayLabel,
+}: {
+  avatarUrl: string | null;
+  initials: string;
+  displayLabel: string;
+}) {
+  const [errored, setErrored] = useState(false);
+  const safeSrc =
+    !errored && typeof avatarUrl === "string" && avatarUrl.length > 0
+      ? avatarUrl
+      : null;
+
+  return (
+    <span className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-full bg-[radial-gradient(circle_at_30%_30%,#DDD6C9_0%,#C6B8A8_45%,#8A7867_100%)] text-sm font-semibold text-white shadow-sm">
+      {safeSrc ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={safeSrc}
+          alt={`Avatar de ${displayLabel}`}
+          loading="lazy"
+          decoding="async"
+          referrerPolicy="no-referrer"
+          crossOrigin="anonymous"
+          onError={() => setErrored(true)}
+          className="h-full w-full object-cover"
+        />
+      ) : (
+        <>{initials || "U"}</>
+      )}
+    </span>
+  );
+}
+
 function SidebarImpl({
   sections,
   open,
@@ -234,19 +270,11 @@ function SidebarImpl({
               type="button"
               className="flex w-full items-center gap-3 rounded-2xl bg-zinc-50 px-3 py-3 text-left transition-colors hover:bg-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-300 dark:bg-zinc-950 dark:hover:bg-zinc-900 dark:focus-visible:ring-zinc-700"
             >
-              <span className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-full bg-[radial-gradient(circle_at_30%_30%,#DDD6C9_0%,#C6B8A8_45%,#8A7867_100%)] text-sm font-semibold text-white shadow-sm">
-                {avatarUrl ? (
-                  <img
-                    src={avatarUrl}
-                    alt={`Avatar de ${displayLabel}`}
-                    loading="lazy"
-                    decoding="async"
-                    className="h-full w-full object-cover"
-                  />
-                ) : (
-                  initials || "U"
-                )}
-              </span>
+              <UserAvatar
+                avatarUrl={avatarUrl}
+                initials={initials}
+                displayLabel={displayLabel}
+              />
               <span className="min-w-0 flex-1">
                 <span className="block truncate text-sm font-semibold text-zinc-950 dark:text-zinc-50">
                   {displayLabel}

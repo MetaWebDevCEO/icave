@@ -8,8 +8,12 @@ import {
   type SupabaseClient,
 } from "@supabase/supabase-js";
 import { formatCalendarDateShort, parseAsCalendarDate } from "@/lib/calendar-date";
+import {
+  buildSections,
+  resolveRoleForUser,
+  type UserRole,
+} from "@/lib/platform-roles";
 
-type UserRole = "revisor" | "usuario";
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 
 type AssignmentRow = {
@@ -25,135 +29,6 @@ type AssignmentRow = {
   attachment_name?: string | null;
   attachment_path?: string | null;
 };
-
-function isUserRole(value: unknown): value is UserRole {
-  return value === "revisor" || value === "usuario";
-}
-
-function normalizeRole(value: unknown): UserRole | null {
-  if (typeof value !== "string") return null;
-  const normalized = value.trim().toLowerCase();
-  return isUserRole(normalized) ? normalized : null;
-}
-
-function normalizeRoleCode(value: unknown): UserRole | null {
-  if (typeof value === "number") {
-    if (value === 1) return "revisor";
-    if (value === 2) return "usuario";
-    return null;
-  }
-
-  if (typeof value !== "string") return null;
-
-  const normalized = value.trim().toLowerCase();
-
-  if (isUserRole(normalized)) return normalized;
-  if (normalized === "reviewer" || normalized === "rev" || normalized === "r") {
-    return "revisor";
-  }
-  if (normalized === "admin" || normalized === "administrador") {
-    return "usuario";
-  }
-  if (normalized === "sup" || normalized === "s") {
-    return "usuario";
-  }
-  if (normalized.includes("usuario")) return "usuario";
-  if (normalized.includes("super")) return "usuario";
-  if (normalized.includes("revi")) return "revisor";
-
-  return null;
-}
-
-async function getRoleFromUserRolesTable(
-  supabase: SupabaseClient,
-  userId: string
-): Promise<UserRole> {
-  const { data, error } = await supabase
-    .from("user_roles")
-    .select("*")
-    .eq("user_id", userId)
-    .maybeSingle();
-
-  if (error) throw error;
-  if (!data) throw new Error("No existe un registro en user_roles para este usuario");
-
-  const record = data as Record<string, unknown>;
-  const role =
-    normalizeRole(record.role) ??
-    normalizeRole(record.rol) ??
-    normalizeRole(record.user_role) ??
-    normalizeRole(record.tipo) ??
-    normalizeRole(record.type) ??
-    normalizeRoleCode(record.role_code);
-
-  if (!role) {
-    throw new Error("No se encontró una columna de rol válida en user_roles.");
-  }
-
-  return role;
-}
-
-function buildSections(role: UserRole): SidebarSection[] {
-  const platformTitle =
-    role === "usuario" ? "Plataforma (Supervisor)" : "Plataforma (Revisor)";
-
-  return role === "usuario"
-    ? [
-        {
-          title: platformTitle,
-          items: [
-            { title: "Mi Rendimiento", href: "/platform" },
-            { title: "Status", href: "/platform/status" },
-            { title: "Bandeja de Entrada", href: "/platform/bandeja" },
-            { title: "Task", href: "/platform/task" },
-          ],
-        },
-        {
-          title: "Herramientas",
-          items: [
-            { title: "Chat Directo", href: "/platform/chat" },
-            { title: "Correos", href: "/platform/correos" },
-            { title: "Archivero", href: "/platform/documentos" },
-            { title: "Planificador", href: "/platform/planificador" },
-          ],
-        },
-        {
-          title: "Setting",
-          items: [
-            { title: "Notificaciones", href: "/platform/settings/notificaciones" },
-            { title: "Configuracion", href: "/platform/configuracion" },
-          ],
-        },
-      ]
-    : [
-        {
-          title: platformTitle,
-          items: [
-            { title: "Dashboard", href: "/platform" },
-            { title: "Asignacion", href: "/platform/revisor/asignacion" },
-            { title: "Supervisores", href: "/platform/supervisores" },
-            { title: "Task", href: "/platform/task" },
-          ],
-        },
-        {
-          title: "Herramientas",
-          items: [
-            { title: "Chat Directo", href: "/platform/chat" },
-            { title: "Correos", href: "/platform/correos" },
-            { title: "Archivero", href: "/platform/documentos" },
-            { title: "Planificador", href: "/platform/planificador" },
-          ],
-        },
-        {
-          title: "Setting",
-          items: [
-            { title: "Roles", href: "/platform/settings/roles" },
-            { title: "Usuarios", href: "/platform/settings/usuarios" },
-            { title: "Notificacion", href: "/platform/settings/notificacion" },
-          ],
-        },
-      ];
-}
 
 function getSearchParam(
   sp: Record<string, string | string[] | undefined>,
@@ -262,7 +137,15 @@ export default async function BandejaSupervisorPage({
 
   if (!user) redirect("/");
 
-  const role = await getRoleFromUserRolesTable(supabase, user.id);
+  let role: UserRole;
+  try {
+    role = await resolveRoleForUser(supabase, user.id, { email: user.email ?? null });
+  } catch (e) {
+    // resolveRoleForUser ya tiene fallback a "usuario" en platform-roles.
+    // Si excepcionalmente falla, usamos "usuario" como fallback amigable.
+    console.warn("[bandeja] resolveRoleForUser falló. Fallback a 'usuario'.", e);
+    role = "usuario";
+  }
   if (role !== "usuario") redirect("/platform");
 
   const sections = buildSections(role);

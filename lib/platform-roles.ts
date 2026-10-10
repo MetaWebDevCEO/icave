@@ -123,6 +123,7 @@ export const REVISOR_ROUTES = {
   usuarios: "/platform/settings/usuarios",
   notificacion: "/platform/settings/notificacion",
   notificaciones: "/platform/settings/notificaciones",
+  configuracion: "/platform/configuracion",
 } as const;
 
 export const SUPERVISOR_ROUTES = {
@@ -166,6 +167,7 @@ export function buildRevisorSections(): SidebarSection[] {
         { title: "Roles", href: REVISOR_ROUTES.roles },
         { title: "Usuarios", href: REVISOR_ROUTES.usuarios },
         { title: "Notificacion", href: REVISOR_ROUTES.notificacion },
+        { title: "Configuracion", href: REVISOR_ROUTES.configuracion },
       ],
     },
   ];
