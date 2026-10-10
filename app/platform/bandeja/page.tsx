@@ -63,11 +63,11 @@ function getStatusTone(status: string | null | undefined) {
 function getPriorityTone(priority: string | null | undefined) {
   const normalized = (priority ?? "").trim().toLowerCase();
 
-  if (normalized.includes("urg") || normalized.includes("alta")) {
+  if (normalized.includes("urg") || normalized.includes("alta") || normalized.includes("high")) {
     return "text-red-700 dark:text-red-300";
   }
 
-  if (normalized.includes("med")) {
+  if (normalized.includes("med") || normalized === "2") {
     return "text-amber-700 dark:text-amber-300";
   }
 
@@ -213,11 +213,11 @@ export default async function BandejaSupervisorPage({
       priorityFilter === "all"
         ? true
         : priorityFilter === "urgent"
-          ? priority.includes("urg") || priority.includes("alta")
+          ? priority.includes("urg") || priority.includes("alta") || priority.includes("high")
           : priorityFilter === "medium"
-            ? priority.includes("med")
+            ? priority.includes("med") || priority === "2"
             : priorityFilter === "low"
-              ? priority.includes("no") || priority.includes("baja")
+              ? priority.includes("no urg") || priority.includes("baja") || priority.includes("low") || priority.includes("baj")
               : true;
 
     return statusOk && priorityOk;
@@ -337,7 +337,7 @@ export default async function BandejaSupervisorPage({
                     : "bg-zinc-100 text-zinc-700 hover:bg-zinc-200 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800",
                 ].join(" ")}
               >
-                Alta
+                Urgente
               </a>
               <a
                 href={`/platform/bandeja?status=${statusFilter}&priority=medium`}
@@ -348,7 +348,7 @@ export default async function BandejaSupervisorPage({
                     : "bg-zinc-100 text-zinc-700 hover:bg-zinc-200 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800",
                 ].join(" ")}
               >
-                Media
+                Medio
               </a>
               <a
                 href={`/platform/bandeja?status=${statusFilter}&priority=low`}
@@ -359,7 +359,7 @@ export default async function BandejaSupervisorPage({
                     : "bg-zinc-100 text-zinc-700 hover:bg-zinc-200 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800",
                 ].join(" ")}
               >
-                Baja
+                No Urgente
               </a>
             </div>
           </div>
@@ -427,7 +427,7 @@ export default async function BandejaSupervisorPage({
                       </td>
                       <td className="px-5 py-4 align-top">
                         <span className={["font-medium", getPriorityTone(assignment.priority)].join(" ")}>
-                          {assignment.priority ?? "Media"}
+                          {assignment.priority ?? "Medio"}
                         </span>
                       </td>
                       <td className="px-5 py-4 align-top">

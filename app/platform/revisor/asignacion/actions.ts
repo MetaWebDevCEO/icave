@@ -511,18 +511,38 @@ export async function createAssignment(
   //      attachment_name, attachment_mime, attachment_path
   // ----------------------------------------------------------------
 
-  // Normalizamos la prioridad a un valor base para luego probar variantes
-  // que pueda exigir el CHECK constraint asignaciones_priority_check.
-  // Como no sabemos el formato exacto, probamos todas las combinaciones
-  // típicas en orden hasta que el INSERT pase.
+  // CHECK constraint real confirmado:
+  //   priority = ANY (ARRAY['Urgente'::text, 'Medio'::text, 'No Urgente'::text])
+  // SOLO se aceptan esos 3 strings exactos. Cualquier otra variante falla.
   const rawPrioridad = String(data.prioridad ?? "medio").toLowerCase().trim();
-  const priorityCandidates: string[] =
-    rawPrioridad.startsWith("alt")
-      ? ["Alta", "alta", "ALTA", "Alto", "alto", "Urgent", "urgent", "Alta prioridad"]
-      : rawPrioridad.startsWith("baj")
-      ? ["Baja", "baja", "BAJA", "Bajo", "bajo", "Low", "low", "Baja prioridad"]
-      : ["Media", "media", "MEDIA", "Medio", "medio", "Normal", "normal", "Medio prioridad"];
-  const labelPrioridad = priorityCandidates[0];
+  const isHighPrior =
+    rawPrioridad.startsWith("alt") ||
+    rawPrioridad.startsWith("hi") ||
+    rawPrioridad === "1" ||
+    rawPrioridad.includes("high") ||
+    rawPrioridad.includes("urg") ||      // incluye "urgente" / "urgent" / "urg"
+    rawPrioridad.startsWith("cr");
+  const isLowPrior =
+    !isHighPrior &&
+    (rawPrioridad.startsWith("baj") ||
+      rawPrioridad.startsWith("lo") ||
+      rawPrioridad.startsWith("no ") ||
+      rawPrioridad.startsWith("no_") ||
+      rawPrioridad.includes("no urg") ||   // "no urgente" de la constraint
+      rawPrioridad === "3" ||
+      rawPrioridad.includes("low"));
+  // Default: prioridad media (Medio)
+
+  // Valores EXACTOS que pide el CHECK constraint (case-sensitive).
+  // Ponemos en primer lugar el literal EXACTO (que 100% pasará), y unas
+  // pocas variantes extra por si acaso (minúsculas, etc.) — no pasará,
+  // pero por compatibilidad histórica no dañan.
+  const priorityCandidates: string[] = isHighPrior
+    ? ["Urgente", "URGENTE", "urgente", "Alta", "Alto", "high", "1"]
+    : isLowPrior
+      ? ["No Urgente", "NO URGENTE", "no urgente", "Baja", "Bajo", "low", "3"]
+      : ["Medio", "MEDIO", "medio", "Media", "Normal", "medium", "2"];
+  const labelPrioridad = isHighPrior ? "Urgente" : isLowPrior ? "No Urgente" : "Medio";
   const metaHeader = [
     `[Tarea creada por revisor] ${revEmail}`,
     `[Asignado a] ${data.supervisorName ? `${data.supervisorName} · ` : ""}${superEmail}`,
@@ -607,7 +627,13 @@ export async function createAssignment(
   }
 
   if (!insertedId) {
-    return { ok: false, error: insertError || "No se pudo crear la tarea." };
+    const tried = priorityCandidates.map((c) => JSON.stringify(c)).join(", ");
+    const detail =
+      insertError && /asignaciones_priority_check/i.test(insertError)
+        ? `El CHECK constraint 'asignaciones_priority_check' rechazó todos los valores probados. Valores intentados: [${tried}]. Consulta el constraint real en Supabase > Table Editor > asignaciones > Constraints y ajusta los valores permitidos.`
+        : insertError || "No se pudo crear la tarea.";
+    console.error("[createAssignment] Insert falló. Error:", insertError, "Candidates tried:", priorityCandidates);
+    return { ok: false, error: detail };
   }
 
   // ----------------------------------------------------------------
@@ -698,18 +724,30 @@ async function sendSupervisorAssignmentEmail(args: EmailArgs): Promise<EmailResu
 
   const ctaHref = appUrl ? `${appUrl.replace(/\/$/, "")}/platform/supervisor/bandeja?assignment=${encodeURIComponent(args.assignmentId)}` : "";
 
-  const prioridadLabel =
-    args.prioridad === "alto"
-      ? "Alta"
-      : args.prioridad === "bajo"
-      ? "Baja"
-      : "Media";
-  const prioridadColor =
-    args.prioridad === "alto"
-      ? "#dc2626"
-      : args.prioridad === "bajo"
-      ? "#65a30d"
-      : "#d97706";
+  const p = String(args.prioridad ?? "").toLowerCase().trim();
+  // Importante: chequear "NO URGENTE" ANTES que "urg", porque "no urgente" contiene "urg"
+  // y caería erróneamente en isHigh si se evalúa primero.
+  const hasNoUrgente =
+    p.includes("no urg") || p.startsWith("no urg") || p.startsWith("nourg");
+  const isHigh =
+    !hasNoUrgente &&
+    (p === "alto" ||
+      p === "alta" ||
+      p === "high" ||
+      p === "urgente" ||
+      p === "1" ||
+      p.startsWith("urg")); // urg / urgente, pero sólo si NO es "no urgente"
+  const isLow =
+    hasNoUrgente ||
+    (!isHigh &&
+      (p === "bajo" ||
+        p === "baja" ||
+        p === "low" ||
+        p.startsWith("baj") ||
+        p.startsWith("lo") ||
+        p === "3"));
+  const prioridadLabel = isHigh ? "Urgente" : isLow ? "No Urgente" : "Medio";
+  const prioridadColor = isHigh ? "#dc2626" : isLow ? "#16a34a" : "#d97706";
 
   const descripcionSegura = (args.descripcion || "").replace(
     /[<>&"]/g,
@@ -959,16 +997,24 @@ async function sendSupervisorAssignmentUpdatedEmail(
     (appUrl ? `${appUrl.replace(/\/$/, "")}/platform/supervisor/bandeja` : "");
 
   const p = String(args.prioridad ?? "").toLowerCase();
-  const prioridadLabel = p.startsWith("alt")
-    ? "Alta"
-    : p.startsWith("baj")
-      ? "Baja"
-      : "Media";
-  const prioridadColor = p.startsWith("alt")
-    ? "#dc2626"
-    : p.startsWith("baj")
-      ? "#65a30d"
-      : "#d97706";
+  // Chequear "NO URGENTE" ANTES que "urg" para evitar falsos positivos.
+  const hasNoUrgenteUpd =
+    p.includes("no urg") || p.startsWith("no urg") || p.startsWith("nourg");
+  const isHighEmail =
+    !hasNoUrgenteUpd &&
+    (p.startsWith("alt") ||
+      p === "high" ||
+      p.startsWith("urg") || // urg / urgente (no = "no urgente")
+      p === "1");
+  const isLowEmail =
+    hasNoUrgenteUpd ||
+    (!isHighEmail &&
+      (p.startsWith("baj") ||
+        p.startsWith("lo") ||
+        p.includes("low") ||
+        p === "3"));
+  const prioridadLabel = isHighEmail ? "Urgente" : isLowEmail ? "No Urgente" : "Medio";
+  const prioridadColor = isHighEmail ? "#dc2626" : isLowEmail ? "#16a34a" : "#d97706";
 
   const descripcionSegura = (args.descripcion || "").replace(/[<>&"]/g, (ch) =>
     ch === "<"

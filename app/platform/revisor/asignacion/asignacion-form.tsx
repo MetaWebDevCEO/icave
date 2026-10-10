@@ -674,7 +674,7 @@ export function AsignacionForm(props: AsignacionFormProps) {
                     <SelectItem value="alto">
                       <div className="flex items-center gap-2">
                         <Flag className="h-3.5 w-3.5 text-red-600 dark:text-red-400" />
-                        Alto
+                        Urgente
                       </div>
                     </SelectItem>
                     <SelectItem value="medio">
@@ -686,7 +686,7 @@ export function AsignacionForm(props: AsignacionFormProps) {
                     <SelectItem value="bajo">
                       <div className="flex items-center gap-2">
                         <Flag className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
-                        Bajo
+                        No Urgente
                       </div>
                     </SelectItem>
                   </SelectContent>

@@ -39,10 +39,10 @@ function formatShortDate(value: string | null | undefined) {
 
 function getPriorityTone(priority: string | null | undefined) {
   const normalized = (priority ?? "").trim().toLowerCase();
-  if (normalized.includes("urg") || normalized.includes("alta")) {
+  if (normalized.includes("urg") || normalized.includes("alta") || normalized.includes("high")) {
     return "text-red-700 dark:text-red-300";
   }
-  if (normalized.includes("med")) {
+  if (normalized.includes("med") || normalized === "2") {
     return "text-amber-700 dark:text-amber-300";
   }
   return "text-emerald-700 dark:text-emerald-300";
@@ -212,7 +212,7 @@ export function TaskBoard({
                   <div className="flex items-center justify-between gap-3">
                     <span>Prioridad</span>
                     <span className={["font-medium", getPriorityTone(t.priority)].join(" ")}>
-                      {t.priority ?? "Media"}
+                      {t.priority ?? "Medio"}
                     </span>
                   </div>
                   <div className="flex items-center justify-between gap-3">

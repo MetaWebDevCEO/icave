@@ -533,9 +533,9 @@ export function QuickAsignarFila(props: QuickAsignarFilaProps) {
                     }
                     className="mt-1 h-9 w-full rounded-lg border border-zinc-200 bg-white px-3 text-sm text-zinc-900 focus:border-zinc-400 focus:outline-none focus:ring-2 focus:ring-zinc-200"
                   >
-                    <option value="alto">Alta</option>
-                    <option value="medio">Media</option>
-                    <option value="bajo">Baja</option>
+                    <option value="alto">Urgente</option>
+                    <option value="medio">Medio</option>
+                    <option value="bajo">No Urgente</option>
                   </select>
                 </div>
               </div>
