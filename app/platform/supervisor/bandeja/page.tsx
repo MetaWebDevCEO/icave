@@ -57,12 +57,19 @@ function getStatusTone(status: string | null | undefined) {
 
 function getPriorityTone(priority: string | null | undefined) {
   const normalized = (priority ?? "").trim().toLowerCase();
+  const hasNoUrgente =
+    normalized.includes("no urg") ||
+    normalized.startsWith("no urg") ||
+    normalized.includes("baja") ||
+    normalized.includes("bajo") ||
+    normalized === "low" ||
+    normalized === "3";
 
-  if (normalized.includes("urg") || normalized.includes("alta")) {
+  if (!hasNoUrgente && (normalized.includes("urg") || normalized.includes("alta") || normalized === "high" || normalized === "1")) {
     return "text-red-700 dark:text-red-300";
   }
 
-  if (normalized.includes("med")) {
+  if (normalized.includes("med") || normalized === "medium" || normalized === "2") {
     return "text-amber-700 dark:text-amber-300";
   }
 
@@ -73,18 +80,36 @@ function getDueTone(value: string | null | undefined, status: string | null | un
   if (!value) return "text-zinc-500 dark:text-zinc-400";
 
   const normalizedStatus = (status ?? "").trim().toLowerCase();
-  if (normalizedStatus.includes("comp") || normalizedStatus.includes("done")) {
+  if (normalizedStatus.includes("comp") || normalizedStatus.includes("done") || normalizedStatus.includes("termin") || normalizedStatus.includes("final") || normalizedStatus.includes("cerrad") || normalizedStatus.includes("entreg")) {
     return "text-zinc-500 dark:text-zinc-400";
   }
 
   const due = parseAsCalendarDate(value);
   if (!due) return "text-zinc-500 dark:text-zinc-400";
 
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  due.setHours(0, 0, 0, 0);
+  // Comparación en UTC (alineada con formatCalendarDateShort).
+  const now = new Date();
+  const todayUtcMidnight = Date.UTC(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate(),
+    0,
+    0,
+    0,
+    0
+  );
 
-  if (due.getTime() < today.getTime()) {
+  const dueUtcMidnight = Date.UTC(
+    due.getUTCFullYear(),
+    due.getUTCMonth(),
+    due.getUTCDate(),
+    0,
+    0,
+    0,
+    0
+  );
+
+  if (dueUtcMidnight < todayUtcMidnight) {
     return "text-red-600 dark:text-red-400";
   }
 

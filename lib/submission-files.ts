@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { parseAsCalendarDate } from "./calendar-date";
 
 export type SubmissionFile = {
   path: string;
@@ -7,7 +8,7 @@ export type SubmissionFile = {
 };
 
 const MAX_EVIDENCE_FILES = 3;
-const MAX_FILE_SIZE_BYTES = 10_000 * 1024;
+const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024;
 
 export function maxEvidenceFiles() {
   return MAX_EVIDENCE_FILES;
@@ -238,11 +239,21 @@ export async function listEvidenceInFolder(
   }));
 }
 
+/**
+ * Parsea una fecha de la misma forma que parseAsCalendarDate (lib/calendar-date.ts)
+ * pero también acepta objetos Date y unknown.
+ * Importante: para calcular AÑO y MES usamos siempre UTC para alinear el
+ * resultado con lo que el usuario ve en la UI (formatCalendarDateShort/Long
+ * usan timeZone UTC).
+ */
 function safeParseDate(input: unknown): Date | null {
   if (input instanceof Date) {
     return isNaN(input.valueOf()) ? null : input;
   }
-  if (typeof input === "string" && input.trim()) {
+  if (typeof input === "string") {
+    const parsed = parseAsCalendarDate(input);
+    if (parsed) return parsed;
+    // fallback por si acaso
     const d = new Date(input);
     return isNaN(d.valueOf()) ? null : d;
   }
@@ -264,10 +275,11 @@ export function sortByMostRecentMonthFirst<T extends SortableAssignmentRow>(rows
     const sortDateA = dueA ?? createdA ?? new Date(0);
     const sortDateB = dueB ?? createdB ?? new Date(0);
 
-    const yA = sortDateA.getFullYear();
-    const yB = sortDateB.getFullYear();
-    const mA = sortDateA.getMonth() + 1;
-    const mB = sortDateB.getMonth() + 1;
+    // Mes y año en UTC — alineado con formatCalendarDateShort en UI
+    const yA = sortDateA.getUTCFullYear();
+    const yB = sortDateB.getUTCFullYear();
+    const mA = sortDateA.getUTCMonth() + 1;
+    const mB = sortDateB.getUTCMonth() + 1;
     const monthKeyA = `${yA}-${String(mA).padStart(2, "0")}`;
     const monthKeyB = `${yB}-${String(mB).padStart(2, "0")}`;
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { formatCalendarDateShort, parseAsCalendarDate } from "@/lib/calendar-date";
 import {
   maxEvidenceFiles,
@@ -39,10 +39,17 @@ function formatShortDate(value: string | null | undefined) {
 
 function getPriorityTone(priority: string | null | undefined) {
   const normalized = (priority ?? "").trim().toLowerCase();
-  if (normalized.includes("urg") || normalized.includes("alta") || normalized.includes("high")) {
+  const hasNoUrgente =
+    normalized.includes("no urg") ||
+    normalized.startsWith("no urg") ||
+    normalized.includes("baja") ||
+    normalized.includes("bajo") ||
+    normalized === "low" ||
+    normalized === "3";
+  if (!hasNoUrgente && (normalized.includes("urg") || normalized.includes("alta") || normalized.includes("high") || normalized === "1")) {
     return "text-red-700 dark:text-red-300";
   }
-  if (normalized.includes("med") || normalized === "2") {
+  if (normalized.includes("med") || normalized === "medium" || normalized === "2") {
     return "text-amber-700 dark:text-amber-300";
   }
   return "text-emerald-700 dark:text-emerald-300";
@@ -64,18 +71,36 @@ function getDueTone(value: string | null | undefined, status: string | null | un
   if (!value) return "text-zinc-500 dark:text-zinc-400";
 
   const normalizedStatus = (status ?? "").trim().toLowerCase();
-  if (normalizedStatus.includes("comp") || normalizedStatus.includes("done")) {
+  if (normalizedStatus.includes("comp") || normalizedStatus.includes("done") || normalizedStatus.includes("termin") || normalizedStatus.includes("final") || normalizedStatus.includes("cerrad") || normalizedStatus.includes("entreg")) {
     return "text-zinc-500 dark:text-zinc-400";
   }
 
   const due = parseAsCalendarDate(value);
   if (!due) return "text-zinc-500 dark:text-zinc-400";
 
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  due.setHours(0, 0, 0, 0);
+  // Comparación en UTC (alineada con formatCalendarDateShort).
+  const now = new Date();
+  const todayUtcMidnight = Date.UTC(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate(),
+    0,
+    0,
+    0,
+    0
+  );
 
-  if (due.getTime() < today.getTime()) {
+  const dueUtcMidnight = Date.UTC(
+    due.getUTCFullYear(),
+    due.getUTCMonth(),
+    due.getUTCDate(),
+    0,
+    0,
+    0,
+    0
+  );
+
+  if (dueUtcMidnight < todayUtcMidnight) {
     return "text-red-600 dark:text-red-400";
   }
 
@@ -126,6 +151,7 @@ export function TaskBoard({
   downloadBasePath,
   onSaveComment,
   onDelete,
+  onDeleteEvidence,
 }: {
   role: UserRole;
   currentUserId: string;
@@ -134,9 +160,12 @@ export function TaskBoard({
   downloadBasePath: string;
   onSaveComment: (formData: FormData) => Promise<void>;
   onDelete: (formData: FormData) => Promise<void>;
+  onDeleteEvidence?: (formData: FormData) => Promise<void>;
 }) {
   const [openId, setOpenId] = useState<string | null>(null);
   const [submissionSizeError, setSubmissionSizeError] = useState<string | null>(null);
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const selected = useMemo(() => {
     if (!openId) return null;
@@ -161,6 +190,30 @@ export function TaskBoard({
 
   const resetModalState = () => {
     setSubmissionSizeError(null);
+    setSelectedFiles([]);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const formatFileSize = (bytes: number) => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+  };
+
+  const removeSelectedFile = (index: number) => {
+    setSelectedFiles((prev) => {
+      const next = prev.filter((_, i) => i !== index);
+      // Sincronizar el input file real
+      if (fileInputRef.current) {
+        const dt = new DataTransfer();
+        next.forEach((f) => dt.items.add(f));
+        fileInputRef.current.files = dt.files;
+      }
+      if (next.length === 0) {
+        setSubmissionSizeError(null);
+      }
+      return next;
+    });
   };
 
   return (
@@ -270,8 +323,8 @@ export function TaskBoard({
 
       {selected && (
         <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 p-4 md:items-center">
-          <div className="w-full max-w-2xl overflow-hidden rounded-lg border border-zinc-200 bg-white shadow-lg dark:border-zinc-800 dark:bg-zinc-950">
-            <div className="flex items-start justify-between gap-3 border-b border-zinc-200 px-5 py-4 dark:border-zinc-800">
+          <div className="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-lg border border-zinc-200 bg-white shadow-lg dark:border-zinc-800 dark:bg-zinc-950">
+            <div className="flex items-start justify-between gap-3 border-b border-zinc-200 px-4 py-3 dark:border-zinc-800">
               <div className="min-w-0">
                 <div className="truncate text-base font-semibold text-zinc-950 dark:text-zinc-50">
                   {selected.title ?? "Sin título"}
@@ -317,7 +370,7 @@ export function TaskBoard({
               </button>
             </div>
 
-            <div className="grid gap-4 px-5 py-4">
+            <div className="grid gap-3 px-4 py-3">
               <div>
                 <div className="text-sm font-medium text-zinc-950 dark:text-zinc-50">
                   Instrucciones
@@ -328,11 +381,11 @@ export function TaskBoard({
               </div>
 
               {role === "revisor" && (
-                <div className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-black">
+                <div className="rounded-lg border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-black">
                   <div className="text-sm font-medium text-zinc-950 dark:text-zinc-50">
                     Estado de la tarea
                   </div>
-                  <div className="mt-2 text-sm text-zinc-700 dark:text-zinc-300">
+                  <div className="mt-1.5 text-sm text-zinc-700 dark:text-zinc-300">
                     {isCompleted(selected.status)
                       ? "Completada por el supervisor."
                       : "Aún pendiente de entrega."}
@@ -341,11 +394,11 @@ export function TaskBoard({
               )}
 
               {role === "usuario" && (
-                <div className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-black">
+                <div className="rounded-lg border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-black">
                   <div className="text-sm font-medium text-zinc-950 dark:text-zinc-50">
                     Estado de tu entrega
                   </div>
-                  <div className="mt-2 text-sm text-zinc-700 dark:text-zinc-300">
+                  <div className="mt-1.5 text-sm text-zinc-700 dark:text-zinc-300">
                     {selectedHasDelivery
                       ? "Tu PDF ya está guardado y el revisor puede revisarlo."
                       : "Aún no has subido una entrega para esta tarea."}
@@ -354,7 +407,7 @@ export function TaskBoard({
               )}
 
               {selectedHasDelivery && (
-                <div className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-black">
+                <div className="rounded-lg border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-black">
                   <div className="text-sm font-semibold text-zinc-950 dark:text-zinc-50">
                     Evidencia de cumplimiento
                   </div>
@@ -366,44 +419,73 @@ export function TaskBoard({
                   </div>
 
                   {deliveryFiles.length > 0 && (
-                    <div className="mt-3 grid gap-2">
+                    <div className="mt-3 grid gap-1.5">
                       {deliveryFiles.map((f, idx) => (
                         <div
                           key={`${f.path}-${idx}`}
-                          className="flex items-center justify-between gap-3 rounded-md border border-zinc-200 bg-zinc-50 px-4 py-3 dark:border-zinc-800 dark:bg-zinc-900/40"
+                          className="flex items-center justify-between gap-2 rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 dark:border-zinc-800 dark:bg-zinc-900/40"
                         >
-                          <div className="flex min-w-0 items-center gap-3">
-                            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-200 dark:bg-emerald-950/30 dark:text-emerald-300 dark:ring-emerald-900">
-                              <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" className="h-5 w-5">
+                          <div className="flex min-w-0 items-center gap-2.5">
+                            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-200 dark:bg-emerald-950/30 dark:text-emerald-300 dark:ring-emerald-900">
+                              <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" className="h-4 w-4">
                                 <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
                                 <path d="M14 2v6h6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
                                 <path d="M9 15h6M9 18h4" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
                               </svg>
                             </div>
                             <div className="min-w-0">
-                              <div className="truncate text-sm font-medium text-zinc-950 dark:text-zinc-50">
+                              <div className="truncate text-xs font-medium text-zinc-950 dark:text-zinc-50">
                                 {f.name}
                               </div>
-                              <div className="text-xs text-zinc-500 dark:text-zinc-400">
+                              <div className="text-[10px] text-zinc-500 dark:text-zinc-400">
                                 Evidencia {idx + 1} · PDF
                               </div>
                             </div>
                           </div>
-                          <div className="flex shrink-0 items-center gap-2">
+                          <div className="flex shrink-0 items-center gap-1">
                             <a
                               href={`${downloadBasePath}?assignment_id=${encodeURIComponent(selected!.id)}&idx=${encodeURIComponent(String(idx))}`}
                               target="_blank"
                               rel="noopener noreferrer"
-                              className="inline-flex h-8 items-center rounded-md border border-zinc-200 bg-white px-3 text-xs font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                              title="Ver"
+                              className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800"
                             >
-                              Ver
+                              <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" className="h-3.5 w-3.5">
+                                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                                <circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="2"/>
+                              </svg>
                             </a>
                             <a
                               href={`${downloadBasePath}?assignment_id=${encodeURIComponent(selected!.id)}&idx=${encodeURIComponent(String(idx))}&disposition=attachment`}
-                              className="inline-flex h-8 items-center rounded-md bg-zinc-900 px-3 text-xs font-medium text-white hover:bg-zinc-700 dark:bg-zinc-50 dark:text-zinc-950 dark:hover:bg-zinc-200"
+                              title="Descargar"
+                              className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-zinc-900 text-white hover:bg-zinc-700 dark:bg-zinc-50 dark:text-zinc-950 dark:hover:bg-zinc-200"
                             >
-                              Descargar
+                              <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" className="h-3.5 w-3.5">
+                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                                <polyline points="7 10 12 15 17 10" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                                <line x1="12" y1="15" x2="12" y2="3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                              </svg>
                             </a>
+                            {role === "usuario" && (
+                              <form action={onDeleteEvidence} className="inline">
+                                <input type="hidden" name="assignment_id" value={selected!.id} />
+                                <input type="hidden" name="file_path" value={f.path} />
+                                <button
+                                  type="submit"
+                                  title="Eliminar"
+                                  onClick={(e) => {
+                                    if (!window.confirm(`¿Eliminar el archivo "${f.name}"?`)) {
+                                      e.preventDefault();
+                                    }
+                                  }}
+                                  className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-red-200 bg-white text-red-600 hover:bg-red-50 dark:border-red-900/50 dark:bg-zinc-900 dark:text-red-300 dark:hover:bg-red-950/40"
+                                >
+                                  <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" className="h-3.5 w-3.5">
+                                    <path d="M18 6 6 18M6 6l12 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                                  </svg>
+                                </button>
+                              </form>
+                            )}
                           </div>
                         </div>
                       ))}
@@ -444,17 +526,13 @@ export function TaskBoard({
 
                 {role === "usuario" && (
                   <section>
+                    {deliveryFiles.length < MAX_EVIDENCE_FILES && (
+                    <>
                     <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-zinc-500 dark:text-zinc-400">
-                      {selectedHasDelivery ? "Modificar evidencias" : "Subir evidencias"}
+                      Subir evidencias
                     </h3>
-                    <div className="mt-3 rounded-2xl border border-zinc-100 bg-zinc-50/60 p-5 dark:border-zinc-900 dark:bg-zinc-900/30">
-                      <p className="text-sm leading-relaxed text-zinc-800 dark:text-zinc-200">
-                        Adjunta hasta {MAX_EVIDENCE_FILES} PDFs como evidencia (máx.
-                        10 MB cada uno). Si vuelves a enviar, se reemplazan los
-                        archivos anteriores.
-                      </p>
-
-                      <form action={onSubmit} className="mt-4 grid gap-3">
+                    <div className="mt-2 rounded-2xl border border-zinc-100 bg-zinc-50/60 p-3 dark:border-zinc-900 dark:bg-zinc-900/30">
+                      <form action={onSubmit} className="grid gap-3">
                         <input
                           type="hidden"
                           name="assignment_id"
@@ -463,6 +541,7 @@ export function TaskBoard({
                         <div className="grid gap-2">
                           <label className="group relative block cursor-pointer rounded-2xl border-2 border-dashed border-zinc-300 bg-white px-4 py-6 text-center transition-colors hover:border-zinc-400 hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950 dark:hover:border-zinc-700 dark:hover:bg-zinc-900/40">
                             <input
+                              ref={fileInputRef}
                               name="files"
                               type="file"
                               accept="application/pdf,.pdf"
@@ -473,9 +552,11 @@ export function TaskBoard({
                                 const files = fileList
                                   ? Array.from(fileList)
                                   : [];
-                                if (files.length > MAX_EVIDENCE_FILES) {
+                                const remaining = MAX_EVIDENCE_FILES - deliveryFiles.length;
+                                if (files.length > remaining) {
+                                  setSelectedFiles([]);
                                   setSubmissionSizeError(
-                                    `Solo se permiten hasta ${MAX_EVIDENCE_FILES} archivos por entrega. Selecciona menos archivos.`
+                                    `Solo puedes subir ${remaining} archivo${remaining === 1 ? "" : "s"} más (ya tienes ${deliveryFiles.length} de ${MAX_EVIDENCE_FILES}).`
                                   );
                                   return;
                                 }
@@ -483,8 +564,9 @@ export function TaskBoard({
                                   (f) => f.size > MAX_SUBMISSION_SIZE_BYTES
                                 );
                                 if (tooBig) {
+                                  setSelectedFiles([]);
                                   setSubmissionSizeError(
-                                    `El archivo ${tooBig.name} supera los 10,000 KB (10 MB). Reduce su tamaño.`
+                                    `El archivo ${tooBig.name} supera los 10 MB. Reduce su tamaño.`
                                   );
                                   return;
                                 }
@@ -498,11 +580,13 @@ export function TaskBoard({
                                   );
                                 });
                                 if (badMime) {
+                                  setSelectedFiles([]);
                                   setSubmissionSizeError(
                                     `El archivo "${badMime.name}" no es un PDF. Selecciona solo archivos .pdf.`
                                   );
                                   return;
                                 }
+                                setSelectedFiles(files);
                                 setSubmissionSizeError(null);
                               }}
                               className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
@@ -512,7 +596,7 @@ export function TaskBoard({
                               Haz clic para seleccionar los PDFs
                             </p>
                             <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-500">
-                              PDF · hasta {MAX_EVIDENCE_FILES} archivos · 10 MB
+                              PDF · {MAX_EVIDENCE_FILES - deliveryFiles.length} de {MAX_EVIDENCE_FILES} espacios · 10 MB
                               máximo cada uno
                             </p>
                           </label>
@@ -522,14 +606,44 @@ export function TaskBoard({
                               {submissionSizeError}
                             </p>
                           )}
+
+                          {selectedFiles.length > 0 && (
+                            <ul className="mt-2 grid gap-2">
+                              {selectedFiles.map((file, idx) => (
+                                <li
+                                  key={`${file.name}-${file.size}-${idx}`}
+                                  className="flex items-center justify-between gap-3 rounded-xl border border-zinc-200 bg-white px-3 py-2 dark:border-zinc-800 dark:bg-zinc-950"
+                                >
+                                  <div className="flex min-w-0 items-center gap-3">
+                                    <DocumentIcon className="h-5 w-5 shrink-0 text-zinc-500 dark:text-zinc-400" />
+                                    <div className="min-w-0">
+                                      <p className="truncate text-sm font-medium text-zinc-900 dark:text-zinc-100">
+                                        {file.name}
+                                      </p>
+                                      <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                                        {formatFileSize(file.size)}
+                                      </p>
+                                    </div>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => removeSelectedFile(idx)}
+                                    className="shrink-0 rounded-lg px-2 py-1 text-xs font-semibold text-red-700 hover:bg-red-50 dark:text-red-300 dark:hover:bg-red-950/40"
+                                  >
+                                    Quitar
+                                  </button>
+                                </li>
+                              ))}
+                            </ul>
+                          )}
                         </div>
 
                         <button
                           type="submit"
-                          disabled={Boolean(submissionSizeError)}
+                          disabled={Boolean(submissionSizeError) || selectedFiles.length === 0}
                           className={[
                             "inline-flex h-11 w-full items-center justify-center rounded-xl px-4 text-sm font-semibold text-white shadow-sm transition-colors",
-                            submissionSizeError
+                            submissionSizeError || selectedFiles.length === 0
                               ? "cursor-not-allowed bg-zinc-400 hover:bg-zinc-400 dark:bg-zinc-700 dark:hover:bg-zinc-700"
                               : "bg-zinc-950 hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-950 dark:hover:bg-white",
                           ].join(" ")}
@@ -540,6 +654,8 @@ export function TaskBoard({
                         </button>
                       </form>
                     </div>
+                    </>
+                    )}
                   </section>
                 )}
 

@@ -379,9 +379,33 @@ export default async function RevisorTaskPage({
   const assignments = sortByMostRecentMonthFirst((data ?? []).filter((row) => {
     if (statusFilter === "all") return true;
     const status = (row.status ?? "").trim().toLowerCase();
-    if (statusFilter === "pending") return status.includes("pend");
-    if (statusFilter === "progress") return status.includes("prog") || status.includes("curso");
-    if (statusFilter === "completed") return status.includes("comp") || status.includes("done");
+
+    const isPending =
+      status.includes("pend") ||
+      status.includes("asign") ||
+      status.includes("abiert") ||
+      status === "" ||
+      status === "new" ||
+      status.includes("nueva");
+
+    const isProgress =
+      status.includes("prog") ||
+      status.includes("curso") ||
+      status.includes("inici") ||
+      status.includes("ejecu") ||
+      status.includes("desarr");
+
+    const isCompleted =
+      status.includes("comp") ||
+      status.includes("done") ||
+      status.includes("termin") ||
+      status.includes("final") ||
+      status.includes("cerrad") ||
+      status.includes("entreg");
+
+    if (statusFilter === "pending") return isPending && !isCompleted;
+    if (statusFilter === "progress") return isProgress && !isCompleted;
+    if (statusFilter === "completed") return isCompleted;
     return true;
   }));
 

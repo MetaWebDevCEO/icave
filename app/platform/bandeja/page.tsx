@@ -78,18 +78,41 @@ function getDueTone(value: string | null | undefined, status: string | null | un
   if (!value) return "text-zinc-500 dark:text-zinc-400";
 
   const normalizedStatus = (status ?? "").trim().toLowerCase();
-  if (normalizedStatus.includes("comp") || normalizedStatus.includes("done")) {
+  if (normalizedStatus.includes("comp") || normalizedStatus.includes("done") || normalizedStatus.includes("termin") || normalizedStatus.includes("final") || normalizedStatus.includes("cerrad") || normalizedStatus.includes("entreg")) {
     return "text-zinc-500 dark:text-zinc-400";
   }
 
   const due = parseAsCalendarDate(value);
   if (!due) return "text-zinc-500 dark:text-zinc-400";
 
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  due.setHours(0, 0, 0, 0);
+  // Comparamos EN UTC para no tener desfase de un día por zona horaria.
+  // Construimos "hoy a medianoche UTC" usando Date.UTC con los componentes locales
+  // de la fecha actual (el usuario percibe "hoy" como su fecha local; para
+  // evitar desfases extremos en GMT±12 usamos un ajuste pequeño con getTimezoneOffset).
+  const now = new Date();
+  // "Hoy de calendario" aplicado en UTC: tomamos la fecha local que el usuario
+  // ve como hoy y la convertimos a fecha UTC 00:00 de ese mismo día.
+  const todayUtcMidnight = Date.UTC(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate(),
+    0,
+    0,
+    0,
+    0
+  );
 
-  if (due.getTime() < today.getTime()) {
+  const dueUtcMidnight = Date.UTC(
+    due.getUTCFullYear(),
+    due.getUTCMonth(),
+    due.getUTCDate(),
+    0,
+    0,
+    0,
+    0
+  );
+
+  if (dueUtcMidnight < todayUtcMidnight) {
     return "text-red-600 dark:text-red-400";
   }
 

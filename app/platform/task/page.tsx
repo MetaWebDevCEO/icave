@@ -12,6 +12,7 @@ import {
   buildSections,
   resolveRoleForUser,
 } from "@/lib/platform-roles";
+import { parseAsCalendarDate } from "@/lib/calendar-date";
 import {
   buildEvidenceDescription,
   cleanupFolder,
@@ -25,6 +26,7 @@ import {
   parseSubmissionFiles,
   sanitizeFileName,
   sortByMostRecentMonthFirst,
+  stripLegacyEntregaLines,
   type SubmissionFile,
 } from "@/lib/submission-files";
 
@@ -65,6 +67,8 @@ async function bestEffortSyncSubmission(
     syncedAt
   );
   const { full, mid, fallback } = getUpdatePayload(files);
+  console.log("[bestEffortSync] payload full.submission_files:", JSON.stringify(full.submission_files));
+  console.log("[bestEffortSync] payload full.submission_path:", full.submission_path);
     const withDesc = (p: Record<string, unknown>) => ({
       ...p,
       status: "Completada",
@@ -74,16 +78,26 @@ async function bestEffortSyncSubmission(
     });
 
   const tryPayload = async (payload: Record<string, unknown>) => {
+    console.log("[bestEffortSync] intentando payload con claves:", Object.keys(payload));
     const first = await supabaseClient
       .from("asignaciones")
       .update(payload)
       .eq("id", assignmentId);
-    if (!first.error) return null;
+    if (!first.error) {
+      console.log("[bestEffortSync] payload OK con claves:", Object.keys(payload));
+      return null;
+    }
+    console.log("[bestEffortSync] error en payload:", first.error.message, "code:", first.error.code);
     if (!adminClient) return first.error;
     const second = await adminClient
       .from("asignaciones")
       .update(payload)
       .eq("id", assignmentId);
+    if (second.error) {
+      console.error("[bestEffortSync] error en admin payload:", second.error.message);
+    } else {
+      console.log("[bestEffortSync] admin payload OK");
+    }
     return second.error;
   };
 
@@ -261,6 +275,10 @@ async function submitWork(formData: FormData) {
     }
   }
 
+  // DEBUG: ver qué archivos llegan al servidor
+  console.log("[submitWork] assignmentId:", assignmentId);
+  console.log("[submitWork] archivos recibidos:", uploadedFiles.length, uploadedFiles.map(f => ({ name: f.name, size: f.size })));
+
   if (!assignmentId) {
     redirect("/platform/task?error=" + encodeURIComponent("Falta assignment_id."));
   }
@@ -287,7 +305,7 @@ async function submitWork(formData: FormData) {
       redirect(
         "/platform/task?error=" +
           encodeURIComponent(
-            "Cada archivo no puede superar los 10,000 KB (10 MB)."
+            "Cada archivo no puede superar los 10 MB."
           )
       );
     }
@@ -315,7 +333,7 @@ async function submitWork(formData: FormData) {
   const fetchVerify = async (client: SupabaseClient) => {
     const extended = await client
       .from("asignaciones")
-      .select("id, assigned_to_email, submission_path, description")
+      .select("id, assigned_to_email, submission_path, submission_files, description")
       .eq("id", assignmentId)
       .maybeSingle();
 
@@ -330,14 +348,24 @@ async function submitWork(formData: FormData) {
 
   const verifyA = await fetchVerify(supabase);
   let verifyRow = verifyA.data as
-    | { assigned_to_email?: string | null; submission_path?: string | null; description?: string | null }
+    | {
+        assigned_to_email?: string | null;
+        submission_path?: string | null;
+        submission_files?: unknown;
+        description?: string | null;
+      }
     | null;
   let verifyError = verifyA.error;
 
   if ((!verifyRow || verifyError) && admin) {
     const verifyB = await fetchVerify(admin);
     verifyRow = verifyB.data as
-      | { assigned_to_email?: string | null; submission_path?: string | null; description?: string | null }
+      | {
+          assigned_to_email?: string | null;
+          submission_path?: string | null;
+          submission_files?: unknown;
+          description?: string | null;
+        }
       | null;
     verifyError = verifyB.error;
   }
@@ -351,20 +379,43 @@ async function submitWork(formData: FormData) {
     redirect("/platform/task?error=" + encodeURIComponent("Esta tarea no está asignada a tu usuario."));
   }
 
-  const folderPath = `entregas/${user.id}/${assignmentId}`;
-
-  if (admin) {
-    await cleanupFolder(admin, "asignaciones", folderPath);
-  } else {
-    await cleanupFolder(supabase, "asignaciones", folderPath);
+  // Archivos ya existentes — se conservan y se suman los nuevos
+  const existingFiles = parseSubmissionFiles(verifyRow ?? {});
+  const maxFiles = maxEvidenceFiles();
+  if (existingFiles.length + uploadedFiles.length > maxFiles) {
+    redirect(
+      "/platform/task?error=" +
+        encodeURIComponent(
+          `No puedes subir más de ${maxFiles} archivos. Ya tienes ${existingFiles.length} y seleccionaste ${uploadedFiles.length}.`
+        )
+    );
   }
 
-  const uploadedEvidence: SubmissionFile[] = [];
-  for (const file of uploadedFiles) {
-    const safeName =
-      sanitizeFileName(file.name || "") ||
-      `evidencia-${uploadedEvidence.length + 1}.pdf`;
+  const folderPath = `entregas/${user.id}/${assignmentId}`;
+
+  // NO limpiamos la carpeta: conservamos los archivos existentes.
+  const uploadedEvidence: SubmissionFile[] = [...existingFiles];
+  const usedNames = new Set(existingFiles.map((f) => (f.name || "").toLowerCase()));
+  // Timestamp único para esta entrega — garantiza que NUNCA haya colisiones
+  // de nombres aunque el usuario suba archivos con el mismo nombre.
+  const ts = Date.now();
+  for (let i = 0; i < uploadedFiles.length; i++) {
+    const file = uploadedFiles[i];
+    const rawName = sanitizeFileName(file.name || "") || `evidencia.pdf`;
+    const dot = rawName.lastIndexOf(".");
+    const stem = dot > 0 ? rawName.slice(0, dot) : rawName;
+    const ext = dot > 0 ? rawName.slice(dot) : ".pdf";
+    // Nombre único: stem-ts-idx.ext
+    let safeName = `${stem}-${ts}-${i + 1}${ext}`;
+    let counter = 1;
+    while (usedNames.has(safeName.toLowerCase())) {
+      safeName = `${stem}-${ts}-${i + 1}-${counter}${ext}`;
+      counter++;
+    }
+    usedNames.add(safeName.toLowerCase());
+
     const objectPath = `${folderPath}/${safeName}`;
+    console.log(`[submitWork] subiendo ${i + 1}/${uploadedFiles.length}: "${safeName}" -> ${objectPath}`);
     const bytes = new Uint8Array(await file.arrayBuffer());
     const fileToUpload = new File([bytes], safeName, {
       type: "application/pdf",
@@ -402,6 +453,8 @@ async function submitWork(formData: FormData) {
     });
   }
 
+  console.log("[submitWork] uploadedEvidence final:", JSON.stringify(uploadedEvidence, null, 2));
+
   const updateError = await bestEffortSyncSubmission(
     supabase,
     admin,
@@ -413,7 +466,114 @@ async function submitWork(formData: FormData) {
   );
 
   if (updateError) {
+    console.error("[submitWork] error al guardar en DB:", updateError.message);
     redirect("/platform/task?error=" + encodeURIComponent(updateError.message));
+  }
+
+  console.log("[submitWork] entrega guardada correctamente con", uploadedEvidence.length, "archivos");
+  redirect("/platform/task");
+}
+
+async function deleteEvidenceFile(formData: FormData) {
+  "use server";
+
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !anonKey || url.includes("__REPLACE_ME__") || anonKey.includes("__REPLACE_ME__")) {
+    redirect("/?error=" + encodeURIComponent("Configura Supabase primero (env vars)."));
+  }
+
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) redirect("/");
+
+  const role = await resolveRoleForUser(supabase, user.id);
+  if (role !== "usuario") {
+    redirect("/platform/task?error=" + encodeURIComponent("No tienes permisos para eliminar evidencias."));
+  }
+
+  const assignmentId = String(formData.get("assignment_id") ?? "").trim();
+  const fileToRemove = String(formData.get("file_path") ?? "").trim();
+  const userEmail = normalizeEmail(user.email);
+
+  if (!assignmentId || !fileToRemove) {
+    redirect("/platform/task?error=" + encodeURIComponent("Faltan datos para eliminar el archivo."));
+  }
+
+  const admin =
+    serviceKey && !serviceKey.includes("__REPLACE_ME__")
+      ? createSupabaseAdminClient(url, serviceKey, {
+          auth: { persistSession: false, autoRefreshToken: false },
+        })
+      : null;
+
+  // Verificar que la asignación pertenece al usuario
+  const verifyClient = admin ?? supabase;
+  const verify = await verifyClient
+    .from("asignaciones")
+    .select("id, assigned_to_email, submission_files, submission_path, submission_name, submission_mime, description")
+    .eq("id", assignmentId)
+    .maybeSingle();
+
+  if (verify.error || !verify.data) {
+    redirect("/platform/task?error=" + encodeURIComponent("La asignación no existe."));
+  }
+
+  const row = verify.data as {
+    assigned_to_email?: string | null;
+    submission_files?: unknown;
+    submission_path?: string | null;
+    submission_name?: string | null;
+    submission_mime?: string | null;
+    description?: string | null;
+  };
+
+  const assignedTo = normalizeEmail(row.assigned_to_email);
+  if (!assignedTo || assignedTo !== userEmail) {
+    redirect("/platform/task?error=" + encodeURIComponent("Esta tarea no está asignada a tu usuario."));
+  }
+
+  const currentFiles = parseSubmissionFiles(row);
+  const remaining = currentFiles.filter((f) => f.path !== fileToRemove);
+
+  // Eliminar del storage
+  try {
+    await supabase.storage.from("asignaciones").remove([fileToRemove]).catch(() => null);
+    if (admin) {
+      await admin.storage.from("asignaciones").remove([fileToRemove]).catch(() => null);
+    }
+  } catch {
+    /* ignore */
+  }
+
+  // Actualizar la DB
+  const payload: Record<string, unknown> = {
+    submission_files: remaining.length > 0 ? remaining : null,
+  };
+
+  if (remaining.length === 0) {
+    payload.submission_path = null;
+    payload.submission_name = null;
+    payload.submission_mime = null;
+    // Limpiar líneas de entrega de la descripción
+    payload.description = stripLegacyEntregaLines(row.description);
+  } else if (row.submission_path === fileToRemove) {
+    // Si se eliminó el primario, promover el primero restante
+    payload.submission_path = remaining[0].path;
+    payload.submission_name = remaining[0].name;
+    payload.submission_mime = remaining[0].mime ?? "application/pdf";
+  }
+
+  const updateA = await supabase
+    .from("asignaciones")
+    .update(payload)
+    .eq("id", assignmentId);
+
+  if (updateA.error && admin) {
+    await admin.from("asignaciones").update(payload).eq("id", assignmentId);
   }
 
   redirect("/platform/task");
@@ -546,6 +706,7 @@ export default async function TaskPage({
   const sections = buildSections(role);
   const sp = await searchParams;
   const statusFilter = getSearchParam(sp, "status") ?? "all";
+  const priorityFilter = getSearchParam(sp, "priority") ?? "all";
   const dateFrom = getSearchParam(sp, "date_from");
   const dateTo = getSearchParam(sp, "date_to");
   const supervisorFilter = getSearchParam(sp, "supervisor");
@@ -563,27 +724,29 @@ export default async function TaskPage({
   const selectFieldsBase =
     "id, created_at, status, title, description, due_at, priority, revisor_id, assigned_to_email";
   const selectFieldsMid =
-    "id, created_at, status, title, description, due_at, priority, revisor_id, assigned_to_email, submission_path, submitted_at, submitted_by_email";
+    "id, created_at, status, title, description, due_at, priority, revisor_id, assigned_to_email, submission_path, submission_files, submitted_at, submitted_by_email";
   const selectFieldsExtended =
-    "id, created_at, status, title, description, due_at, priority, revisor_id, assigned_to_email, submission_name, submission_path, submitted_at, submitted_by_email";
+    "id, created_at, status, title, description, due_at, priority, revisor_id, assigned_to_email, submission_name, submission_path, submission_files, submitted_at, submitted_by_email";
 
   const fetchSupervisor = async (client: SupabaseClient) => {
+    // NOTA: ordenamos POR created_at DESC (las más recientes PRIMERO) y ampliamos
+    // el límite a 1000 para no cortar tareas creadas en octubre cuando hay cientos
+    // de tareas antiguas con fecha límite vieja.
+    // (antes order by due_at ASC + limit 200 excluía las nuevas con due_at futuro).
     const extended = await client
       .from("asignaciones")
       .select(selectFieldsExtended)
       .ilike("assigned_to_email", userEmail)
-      .order("due_at", { ascending: true })
       .order("created_at", { ascending: false })
-      .limit(200);
+      .limit(1000);
 
     if (isSchemaMismatchPostgres(extended.error)) {
       const mid = await client
         .from("asignaciones")
         .select(selectFieldsMid)
         .ilike("assigned_to_email", userEmail)
-        .order("due_at", { ascending: true })
         .order("created_at", { ascending: false })
-        .limit(200);
+        .limit(1000);
 
       if (!isSchemaMismatchPostgres(mid.error)) return mid;
 
@@ -591,9 +754,8 @@ export default async function TaskPage({
         .from("asignaciones")
         .select(selectFieldsBase)
         .ilike("assigned_to_email", userEmail)
-        .order("due_at", { ascending: true })
         .order("created_at", { ascending: false })
-        .limit(200);
+        .limit(1000);
     }
 
     return extended;
@@ -603,26 +765,23 @@ export default async function TaskPage({
     const extended = await client
       .from("asignaciones")
       .select(selectFieldsExtended)
-      .order("due_at", { ascending: true })
       .order("created_at", { ascending: false })
-      .limit(200);
+      .limit(1000);
 
     if (isSchemaMismatchPostgres(extended.error)) {
       const mid = await client
         .from("asignaciones")
         .select(selectFieldsMid)
-        .order("due_at", { ascending: true })
         .order("created_at", { ascending: false })
-        .limit(200);
+        .limit(1000);
 
       if (!isSchemaMismatchPostgres(mid.error)) return mid;
 
       return client
         .from("asignaciones")
         .select(selectFieldsBase)
-        .order("due_at", { ascending: true })
         .order("created_at", { ascending: false })
-        .limit(200);
+        .limit(1000);
     }
 
     return extended;
@@ -840,20 +999,98 @@ export default async function TaskPage({
   }
 
   const assignments = sortByMostRecentMonthFirst((data ?? []).filter((row) => {
+    // =================================================================
+    // 1) FILTRO DE STATUS — variantes comunes en español/inglés.
+    //    (el CHECK constraint de la DB suele usar: Pendiente / En progreso / Completada,
+    //     pero también aceptamos variantes como Asignada, Iniciada, Finalizada...)
+    // =================================================================
     const status = (row.status ?? "").trim().toLowerCase();
+
+    const isPending =
+      status.includes("pend") ||   // Pendiente / Pending
+      status.includes("asign") ||  // Asignada
+      status.includes("abiert") || // Abierta / Abierto
+      status.includes("inici") ||  // Iniciada (a veces se usa como "aún no terminada")
+      status === "" ||             // vacío → se trata como pendiente
+      status === "new" ||
+      status.includes("nueva");
+
+    const isProgress =
+      status.includes("prog") ||    // Progreso / Progress
+      status.includes("curso") ||   // En curso
+      status.includes("inici") ||   // Iniciada
+      status.includes("ejecu") ||   // En ejecución
+      status.includes("desarr");    // En desarrollo
+
+    const isCompleted =
+      status.includes("comp") ||    // Completada / Completed
+      status.includes("done") ||    // Done
+      status.includes("termin") ||  // Terminada
+      status.includes("final") ||   // Finalizada / Finalizada
+      status.includes("cerrad") ||  // Cerrada
+      status.includes("entreg");    // Entregada
+
     const passStatus =
       statusFilter === "all"
         ? true
         : statusFilter === "pending"
-          ? status.includes("pend")
+          ? isPending && !isCompleted
           : statusFilter === "progress"
-            ? status.includes("prog") || status.includes("curso")
+            ? isProgress && !isCompleted
             : statusFilter === "completed"
-              ? status.includes("comp") || status.includes("done")
+              ? isCompleted
               : true;
 
     if (!passStatus) return false;
 
+    // =================================================================
+    // 2) FILTRO DE PRIORIDAD — compatible con los 3 valores EXACTOS
+    //    del CHECK constraint: Urgente · Medio · No Urgente
+    //    (importante: "No Urgente" contiene 'urg', así que lo detectamos ANTES)
+    // =================================================================
+    const priority = ((row as { priority?: string | null }).priority ?? "")
+      .trim()
+      .toLowerCase();
+    const hasNoUrgente =
+      priority.includes("no urg") ||
+      priority.startsWith("no urg") ||
+      priority.startsWith("nourg") ||
+      priority.includes("baja") ||
+      priority.includes("bajo") ||
+      priority === "low" ||
+      priority === "3";
+    const isHighPriority =
+      !hasNoUrgente &&
+      (priority.startsWith("urg") ||
+        priority.includes("alta") ||
+        priority === "high" ||
+        priority === "1");
+    const isLowPriority =
+      hasNoUrgente ||
+      (!isHighPriority &&
+        (priority.startsWith("baj") ||
+          priority === "low" ||
+          priority === "3"));
+    const isMedPriority =
+      !isHighPriority &&
+      !isLowPriority &&
+      (priority.includes("med") || priority === "medium" || priority === "2" || priority === "");
+    const passPriority =
+      priorityFilter === "all"
+        ? true
+        : priorityFilter === "urgent"
+          ? isHighPriority
+          : priorityFilter === "medium"
+            ? isMedPriority
+            : priorityFilter === "low"
+              ? isLowPriority
+              : true;
+
+    if (!passPriority) return false;
+
+    // =================================================================
+    // 3) FILTRO POR SUPERVISOR / ASIGNADO (assigned_to_email)
+    // =================================================================
     const supervisorNeedle = normalizeEmail(supervisorFilter);
     if (supervisorNeedle) {
       const haystacks = [
@@ -864,34 +1101,68 @@ export default async function TaskPage({
       if (!match) return false;
     }
 
+    // =================================================================
+    // 4) FILTRO DE FECHAS.
+    //    El usuario filtra en la UI la "Fecha límite" (due_at), y la
+    //    tarjeta también muestra "Fecha límite: <due_at>". Así que el
+    //    filtro de fecha PRINCIPAL es due_at. Solo si due_at es NULL
+    //    hacemos fallback a created_at.
+    //    NO usamos submitted_at en este filtro (no se muestra en la
+    //    tarjeta como fecha límite, y causaba que "tareas de septiembre
+    //    creadas en octubre se colaran al filtrar por octubre a pesar de due_at=septiembre).
+    // =================================================================
     const isoFrom = (dateFrom ?? "").trim();
     const isoTo = (dateTo ?? "").trim();
     if (isoFrom || isoTo) {
-      const candidates = [
-        row.created_at,
-        (row as { due_at?: string | null }).due_at,
-        (row as { submitted_at?: string | null }).submitted_at,
-      ].filter(Boolean) as string[];
+      // Construimos fromTs / toTs en UTC para no desfase.
+      const parseUtcDate = (yyyy_mm_dd: string): number | null => {
+        const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(yyyy_mm_dd);
+        if (!m) return null;
+        return Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+      };
 
-      const t = candidates.map((iso) => new Date(iso).getTime());
+      const fromTs = isoFrom ? parseUtcDate(isoFrom) : null;
+      // Para "hasta" incluimos el final del día 23:59:59.999 UTC
+      const toTs = isoTo
+        ? (() => {
+            const start = parseUtcDate(isoTo);
+            if (start == null) return null;
+            return start + 86_399_999; // 23h 59m 59.999s
+          })()
+        : null;
 
-      if (t.length === 0) {
-        return false;
+      if (fromTs == null && isoFrom) return true; // fecha-from inválida → no filtrar
+      if (toTs == null && isoTo) return true;     // fecha-to inválida → no filtrar
+
+      // Candidatos que participan en el filtro (AMBOS, SIEMPRE, para
+      // resolver: "muéstrame tareas con fecha límite o creadas en octubre").
+      // IMPORTANTE: NO incluimos submitted_at (fecha de entrega) para
+      // evitar el colado de "tareas de sep creadas en sep pero entregadas en
+      // oct que aparecen al filtrar oct a pesar de due_at=sep".
+      const candidates: string[] = [];
+      const due_at = (row as { due_at?: string | null }).due_at;
+      if (due_at) candidates.push(due_at);
+      if (row.created_at) candidates.push(row.created_at);
+
+      if (candidates.length === 0) return false;
+
+      const candidateTs = candidates
+        .map((iso) => {
+          const d = parseAsCalendarDate(iso);
+          return d ? d.getTime() : null;
+        })
+        .filter((t): t is number => t != null);
+
+      // Fallback defensivo: si NO se pudo parsear ninguna fecha de la fila,
+      // NO la tiramos (devolvemos true). Evita que formatos de fecha atípicos
+      // hagan desaparecer toda la pantalla.
+      if (candidateTs.length === 0) return true;
+
+      if (fromTs != null) {
+        if (!candidateTs.some((t) => t >= fromTs)) return false;
       }
-
-      if (isoFrom) {
-        const d = new Date(isoFrom);
-        if (!Number.isNaN(d.getTime())) {
-          const fromTs = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0).getTime();
-          if (!t.some((x) => x >= fromTs)) return false;
-        }
-      }
-      if (isoTo) {
-        const d = new Date(isoTo);
-        if (!Number.isNaN(d.getTime())) {
-          const toTs = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999).getTime();
-          if (!t.some((x) => x <= toTs)) return false;
-        }
+      if (toTs != null) {
+        if (!candidateTs.some((t) => t <= toTs)) return false;
       }
     }
 
@@ -905,6 +1176,7 @@ export default async function TaskPage({
       currentUserEmail={user.email ?? undefined}
       sections={sections}
       statusFilter={statusFilter}
+      priorityFilter={priorityFilter}
       dateFrom={dateFrom}
       dateTo={dateTo}
       supervisorFilter={supervisorFilter}
@@ -918,6 +1190,7 @@ export default async function TaskPage({
       downloadBasePath="/platform/task/download"
       onSaveComment={saveComment}
       onDelete={deleteAssignment}
+      onDeleteEvidence={deleteEvidenceFile}
     />
   );
 }

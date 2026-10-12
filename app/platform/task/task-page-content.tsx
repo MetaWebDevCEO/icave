@@ -12,6 +12,7 @@ type Props = {
   currentUserEmail?: string;
   sections: SidebarSection[];
   statusFilter: string;
+  priorityFilter?: string;
   dateFrom?: string;
   dateTo?: string;
   supervisorFilter?: string;
@@ -25,6 +26,7 @@ type Props = {
   downloadBasePath: string;
   onSaveComment: (formData: FormData) => Promise<void>;
   onDelete: (formData: FormData) => Promise<void>;
+  onDeleteEvidence?: (formData: FormData) => Promise<void>;
 };
 
 function filterClass(statusFilter: string, key: string, value: string) {
@@ -56,6 +58,7 @@ export function TaskPageContent({
   currentUserEmail,
   sections,
   statusFilter,
+  priorityFilter = "all",
   dateFrom,
   dateTo,
   supervisorFilter,
@@ -69,9 +72,11 @@ export function TaskPageContent({
   downloadBasePath,
   onSaveComment,
   onDelete,
+  onDeleteEvidence,
 }: Props) {
   const preserve: Record<string, string | undefined> = {
     status: statusFilter && statusFilter !== "all" ? statusFilter : undefined,
+    priority: priorityFilter && priorityFilter !== "all" ? priorityFilter : undefined,
     date_from: dateFrom,
     date_to: dateTo,
     supervisor: supervisorFilter,
@@ -84,7 +89,24 @@ export function TaskPageContent({
     })}`;
   };
 
-  const clearLink = `${basePath}?status=all`;
+  const linkForPriority = (priority: string) => {
+    return `${basePath}${buildQuery({
+      ...preserve,
+      priority: priority === "all" ? undefined : priority,
+    })}`;
+  };
+
+  const clearLink = `${basePath}?status=all&priority=all`;
+
+  const priorityChipClass = (key: "all" | "urgent" | "medium" | "low") => {
+    const active = priorityFilter === key;
+    return [
+      "rounded-full px-3 py-1.5",
+      active
+        ? "bg-zinc-900 text-white dark:bg-zinc-50 dark:text-zinc-900"
+        : "bg-zinc-100 text-zinc-700 hover:bg-zinc-200 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800",
+    ].join(" ");
+  };
 
   return (
     <PlatformShell
@@ -119,13 +141,32 @@ export function TaskPageContent({
           </div>
         </div>
 
-        <div className="mt-4 rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
+        <div className="mt-4 flex flex-wrap items-center gap-2 text-sm">
+          <a href={linkForPriority("all")} className={priorityChipClass("all")}>
+            Todas
+          </a>
+          <a
+            href={linkForPriority("urgent")} className={priorityChipClass("urgent")}>
+            Urgente
+          </a>
+          <a
+            href={linkForPriority("medium")} className={priorityChipClass("medium")}>
+            Medio
+          </a>
+          <a
+            href={linkForPriority("low")} className={priorityChipClass("low")}>
+            No Urgente
+          </a>
+        </div>
+
+        <div className="mt-2 rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
           <form
             method="GET"
             action={basePath}
             className="grid grid-cols-1 gap-3 md:grid-cols-[1fr_1fr_1.3fr_auto_auto]"
           >
             <input type="hidden" name="status" value={statusFilter ?? "all"} />
+            <input type="hidden" name="priority" value={priorityFilter ?? "all"} />
 
             <label className="grid gap-1 text-sm">
               <span className="text-zinc-600 dark:text-zinc-400">Desde</span>
@@ -230,6 +271,7 @@ export function TaskPageContent({
             downloadBasePath={downloadBasePath}
             onSaveComment={onSaveComment}
             onDelete={onDelete}
+            onDeleteEvidence={onDeleteEvidence}
           />
         )}
       </div>
