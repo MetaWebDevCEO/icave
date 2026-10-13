@@ -262,32 +262,28 @@ async function submitWork(formData: FormData) {
   }
 
   const assignmentId = String(formData.get("assignment_id") ?? "").trim();
-  const uploadedFiles: File[] = [];
-  const legacySingle = formData.get("file");
-  if (legacySingle instanceof File && legacySingle.size > 0) {
-    uploadedFiles.push(legacySingle);
-  } else {
-    const allFiles = formData.getAll("files");
-    for (const value of allFiles) {
-      if (value instanceof File && value.size > 0) {
-        uploadedFiles.push(value);
-      }
-    }
-  }
-
-  // DEBUG: ver qué archivos llegan al servidor
-  console.log("[submitWork] assignmentId:", assignmentId);
-  console.log("[submitWork] archivos recibidos:", uploadedFiles.length, uploadedFiles.map(f => ({ name: f.name, size: f.size })));
+  const uploadedPathsRaw = String(formData.get("uploaded_paths") ?? "").trim();
 
   if (!assignmentId) {
     redirect("/platform/task?error=" + encodeURIComponent("Falta assignment_id."));
   }
 
-  if (uploadedFiles.length === 0) {
+  if (!uploadedPathsRaw) {
+    redirect("/platform/task?error=" + encodeURIComponent("No se recibieron archivos."));
+  }
+
+  let uploadedPaths: string[] = [];
+  try {
+    uploadedPaths = JSON.parse(uploadedPathsRaw);
+  } catch {
+    redirect("/platform/task?error=" + encodeURIComponent("Formato de archivos inválido."));
+  }
+
+  if (!Array.isArray(uploadedPaths) || uploadedPaths.length === 0) {
     redirect("/platform/task?error=" + encodeURIComponent("Selecciona al menos un PDF."));
   }
 
-  if (uploadedFiles.length > MAX_EVIDENCE_FILES) {
+  if (uploadedPaths.length > MAX_EVIDENCE_FILES) {
     redirect(
       "/platform/task?error=" +
         encodeURIComponent(
@@ -296,25 +292,14 @@ async function submitWork(formData: FormData) {
     );
   }
 
-  for (const f of uploadedFiles) {
-    const lower = (f.name || "archivo.pdf").toLowerCase();
-    if (!lower.endsWith(".pdf")) {
+  // Validar que los paths sean PDFs y pertenezcan a este usuario
+  for (const p of uploadedPaths) {
+    if (typeof p !== "string" || !p.endsWith(".pdf")) {
       redirect("/platform/task?error=" + encodeURIComponent("Solo se permiten archivos PDF."));
     }
-    if (f.size > MAX_SUBMISSION_SIZE_BYTES) {
-      redirect(
-        "/platform/task?error=" +
-          encodeURIComponent(
-            "Cada archivo no puede superar los 10 MB."
-          )
-      );
-    }
-    const bytes = new Uint8Array(await f.arrayBuffer());
-    if (!isPdfBytes(bytes)) {
-      redirect(
-        "/platform/task?error=" +
-          encodeURIComponent("Uno de los archivos no parece ser un PDF válido.")
-      );
+    const expectedPrefix = `entregas/${user.id}/${assignmentId}/`;
+    if (!p.startsWith(expectedPrefix)) {
+      redirect("/platform/task?error=" + encodeURIComponent("Ruta de archivo inválida."));
     }
   }
 
@@ -382,78 +367,26 @@ async function submitWork(formData: FormData) {
   // Archivos ya existentes — se conservan y se suman los nuevos
   const existingFiles = parseSubmissionFiles(verifyRow ?? {});
   const maxFiles = maxEvidenceFiles();
-  if (existingFiles.length + uploadedFiles.length > maxFiles) {
+  if (existingFiles.length + uploadedPaths.length > maxFiles) {
     redirect(
       "/platform/task?error=" +
         encodeURIComponent(
-          `No puedes subir más de ${maxFiles} archivos. Ya tienes ${existingFiles.length} y seleccionaste ${uploadedFiles.length}.`
+          `No puedes subir más de ${maxFiles} archivos. Ya tienes ${existingFiles.length} y seleccionaste ${uploadedPaths.length}.`
         )
     );
   }
 
-  const folderPath = `entregas/${user.id}/${assignmentId}`;
-
-  // NO limpiamos la carpeta: conservamos los archivos existentes.
+  // Los archivos YA se subieron directamente desde el navegador a Supabase Storage.
+  // Solo construimos la lista de evidencia con los paths recibidos.
   const uploadedEvidence: SubmissionFile[] = [...existingFiles];
-  const usedNames = new Set(existingFiles.map((f) => (f.name || "").toLowerCase()));
-  // Timestamp único para esta entrega — garantiza que NUNCA haya colisiones
-  // de nombres aunque el usuario suba archivos con el mismo nombre.
-  const ts = Date.now();
-  for (let i = 0; i < uploadedFiles.length; i++) {
-    const file = uploadedFiles[i];
-    const rawName = sanitizeFileName(file.name || "") || `evidencia.pdf`;
-    const dot = rawName.lastIndexOf(".");
-    const stem = dot > 0 ? rawName.slice(0, dot) : rawName;
-    const ext = dot > 0 ? rawName.slice(dot) : ".pdf";
-    // Nombre único: stem-ts-idx.ext
-    let safeName = `${stem}-${ts}-${i + 1}${ext}`;
-    let counter = 1;
-    while (usedNames.has(safeName.toLowerCase())) {
-      safeName = `${stem}-${ts}-${i + 1}-${counter}${ext}`;
-      counter++;
-    }
-    usedNames.add(safeName.toLowerCase());
-
-    const objectPath = `${folderPath}/${safeName}`;
-    console.log(`[submitWork] subiendo ${i + 1}/${uploadedFiles.length}: "${safeName}" -> ${objectPath}`);
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    const fileToUpload = new File([bytes], safeName, {
-      type: "application/pdf",
-    });
-
-    const uploadA = await supabase.storage
-      .from("asignaciones")
-      .upload(objectPath, fileToUpload, {
-        contentType: "application/pdf",
-        upsert: true,
-      });
-
-    if (uploadA.error && admin) {
-      const uploadB = await admin.storage
-        .from("asignaciones")
-        .upload(objectPath, fileToUpload, {
-          contentType: "application/pdf",
-          upsert: true,
-        });
-      if (uploadB.error) {
-        redirect(
-          "/platform/task?error=" + encodeURIComponent(uploadB.error.message)
-        );
-      }
-    } else if (uploadA.error) {
-      redirect(
-        "/platform/task?error=" + encodeURIComponent(uploadA.error.message)
-      );
-    }
-
+  for (const objectPath of uploadedPaths) {
+    const safeName = objectPath.split("/").pop() || "evidencia.pdf";
     uploadedEvidence.push({
       path: objectPath,
       name: safeName,
       mime: "application/pdf",
     });
   }
-
-  console.log("[submitWork] uploadedEvidence final:", JSON.stringify(uploadedEvidence, null, 2));
 
   const updateError = await bestEffortSyncSubmission(
     supabase,

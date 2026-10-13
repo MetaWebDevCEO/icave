@@ -9,6 +9,7 @@ import {
   type SubmissionFile,
 } from "@/lib/submission-files";
 import { FileText as DocumentIcon } from "@/components/ui/icons";
+import { createClient } from "@/utils/supabase/client";
 
 const MAX_SUBMISSION_SIZE_BYTES = maxSubmissionSizeBytes();
 const MAX_EVIDENCE_FILES = maxEvidenceFiles();
@@ -170,6 +171,8 @@ export function TaskBoard({
   const [openId, setOpenId] = useState<string | null>(null);
   const [submissionSizeError, setSubmissionSizeError] = useState<string | null>(null);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  const [uploadProgress, setUploadProgress] = useState<string | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const selected = useMemo(() => {
@@ -557,7 +560,53 @@ export function TaskBoard({
                       Subir evidencias
                     </h3>
                     <div className="mt-2 rounded-2xl border border-zinc-100 bg-zinc-50/60 p-3 dark:border-zinc-900 dark:bg-zinc-900/30">
-                      <form action={onSubmit} className="grid gap-3">
+                      <form
+                        className="grid gap-3"
+                        onSubmit={async (e) => {
+                          e.preventDefault();
+                          if (uploadProgress || selectedFiles.length === 0) return;
+                          setUploadError(null);
+
+                          try {
+                            const supabase = createClient();
+                            const ts = Date.now();
+                            const folderPath = `entregas/${currentUserId}/${selected.id}`;
+                            const uploadedPaths: string[] = [];
+
+                            for (let i = 0; i < selectedFiles.length; i++) {
+                              const file = selectedFiles[i];
+                              setUploadProgress(`Subiendo ${i + 1}/${selectedFiles.length}: ${file.name}`);
+
+                              const rawName = file.name || "evidencia.pdf";
+                              const dot = rawName.lastIndexOf(".");
+                              const stem = dot > 0 ? rawName.slice(0, dot) : rawName;
+                              const ext = dot > 0 ? rawName.slice(dot) : ".pdf";
+                              const safeName = `${stem}-${ts}-${i + 1}${ext}`;
+                              const objectPath = `${folderPath}/${safeName}`;
+
+                              const { error } = await supabase.storage
+                                .from("asignaciones")
+                                .upload(objectPath, file, {
+                                  contentType: "application/pdf",
+                                  upsert: true,
+                                });
+
+                              if (error) throw error;
+                              uploadedPaths.push(objectPath);
+                            }
+
+                            setUploadProgress("Procesando entrega...");
+                            const fd = new FormData();
+                            fd.set("assignment_id", selected.id);
+                            fd.set("uploaded_paths", JSON.stringify(uploadedPaths));
+                            await onSubmit(fd);
+                          } catch (err) {
+                            const msg = err instanceof Error ? err.message : "Error al subir archivos.";
+                            setUploadError(msg);
+                            setUploadProgress(null);
+                          }
+                        }}
+                      >
                         <input
                           type="hidden"
                           name="assignment_id"
@@ -663,19 +712,33 @@ export function TaskBoard({
                           )}
                         </div>
 
+                        {uploadProgress && (
+                          <p className="rounded-xl bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-800 ring-1 ring-inset ring-blue-100 dark:bg-blue-950/30 dark:text-blue-200 dark:ring-blue-900/40">
+                            {uploadProgress}
+                          </p>
+                        )}
+
+                        {uploadError && (
+                          <p className="rounded-xl bg-red-50 px-3 py-2 text-xs font-semibold text-red-800 ring-1 ring-inset ring-red-100 dark:bg-red-950/30 dark:text-red-200 dark:ring-red-900/40">
+                            {uploadError}
+                          </p>
+                        )}
+
                         <button
                           type="submit"
-                          disabled={Boolean(submissionSizeError) || selectedFiles.length === 0}
+                          disabled={Boolean(submissionSizeError) || selectedFiles.length === 0 || Boolean(uploadProgress)}
                           className={[
                             "inline-flex h-11 w-full items-center justify-center rounded-xl px-4 text-sm font-semibold text-white shadow-sm transition-colors",
-                            submissionSizeError || selectedFiles.length === 0
+                            submissionSizeError || selectedFiles.length === 0 || uploadProgress
                               ? "cursor-not-allowed bg-zinc-400 hover:bg-zinc-400 dark:bg-zinc-700 dark:hover:bg-zinc-700"
                               : "bg-zinc-950 hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-950 dark:hover:bg-white",
                           ].join(" ")}
                         >
-                          {selectedHasDelivery || isCompleted(selected.status)
-                            ? "Actualizar entrega"
-                            : "Enviar entrega"}
+                          {uploadProgress
+                            ? "Subiendo..."
+                            : selectedHasDelivery || isCompleted(selected.status)
+                              ? "Actualizar entrega"
+                              : "Enviar entrega"}
                         </button>
                       </form>
                     </div>
