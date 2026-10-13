@@ -21,7 +21,7 @@ export default async function PlatformPage() {
 
   // Resolvemos el rol y redirigimos al dashboard de cada perfil.
   // - Revisor  -> /platform/revisor       (dashboard con estadísticas)
-  // - Usuario (Supervisor) -> /platform/supervisor/bandeja
+  // - Usuario (Supervisor) -> /platform/supervisor
   let role = "usuario";
   try {
     role = await resolveRoleForUser(supabase, user.id);
@@ -33,5 +33,5 @@ export default async function PlatformPage() {
     redirect("/platform/revisor");
   }
 
-  redirect("/platform/supervisor/bandeja");
+  redirect("/platform/supervisor");
 }

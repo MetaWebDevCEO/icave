@@ -129,7 +129,6 @@ export const REVISOR_ROUTES = {
 export const SUPERVISOR_ROUTES = {
   dashboard: "/platform/supervisor",
   rendimiento: "/platform/supervisor",
-  bandeja: "/platform/supervisor/bandeja",
   task: "/platform/task",
   chat: "/platform/chat",
   correos: "/platform/correos",

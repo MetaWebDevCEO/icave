@@ -680,7 +680,7 @@ export async function createAssignment(
   revalidatePath("/platform/revisor/asignacion");
   revalidatePath("/platform/supervisores");
   revalidatePath("/platform/revisor/supervisores");
-  revalidatePath("/platform/supervisor/bandeja");
+  revalidatePath("/platform/task");
 
   return {
     ok: true,
@@ -722,7 +722,7 @@ async function sendSupervisorAssignmentEmail(args: EmailArgs): Promise<EmailResu
 
   const subject = `Nueva tarea asignada · Vence ${vence} · ${args.actividadTitulo}`;
 
-  const ctaHref = appUrl ? `${appUrl.replace(/\/$/, "")}/platform/supervisor/bandeja?assignment=${encodeURIComponent(args.assignmentId)}` : "";
+  const ctaHref = appUrl ? `${appUrl.replace(/\/$/, "")}/platform/task?assignment=${encodeURIComponent(args.assignmentId)}` : "";
 
   const p = String(args.prioridad ?? "").toLowerCase().trim();
   // Importante: chequear "NO URGENTE" ANTES que "urg", porque "no urgente" contiene "urg"
@@ -769,7 +769,7 @@ async function sendSupervisorAssignmentEmail(args: EmailArgs): Promise<EmailResu
   //   - CTA botón negro (#111) ANCHO, CENTRADO, border-radius 12px
   //   - enlace copia/pega bajo el botón
   // ---------------------------------------------------------------
-  const displayCtaHref = ctaHref || (appUrl ? `${appUrl.replace(/\/$/, "")}/platform/supervisor/bandeja` : "");
+  const displayCtaHref = ctaHref || (appUrl ? `${appUrl.replace(/\/$/, "")}/platform/task` : "");
 
   const html = `<!doctype html>
 <html xmlns="http://www.w3.org/1999/xhtml" lang="es">
@@ -940,7 +940,7 @@ async function sendSupervisorAssignmentEmail(args: EmailArgs): Promise<EmailResu
     `Vence: ${vence}`,
     `Adjuntos: ${args.pdfCount} PDF${args.pdfCount === 1 ? "" : "s"}`,
     args.descripcion?.trim() ? `\nNotas del revisor:\n${args.descripcion.trim()}\n` : "",
-    displayCtaHref ? `Abre la tarea aquí: ${displayCtaHref}` : `Abre Promas iCave y ve a tu bandeja de tareas.`,
+    displayCtaHref ? `Abre la tarea aquí: ${displayCtaHref}` : `Abre Promas iCave y ve a tu panel de tareas.`,
   ].filter((l) => typeof l === "string") as string[];
 
   const text = buildPlainEmail(textLines);
@@ -990,11 +990,11 @@ async function sendSupervisorAssignmentUpdatedEmail(
   const subject = `Tarea actualizada · Nuevo vencimiento ${vence} · ${args.actividadTitulo}`;
 
   const ctaHref = appUrl
-    ? `${appUrl.replace(/\/$/, "")}/platform/supervisor/bandeja?assignment=${encodeURIComponent(args.assignmentId)}`
+    ? `${appUrl.replace(/\/$/, "")}/platform/task?assignment=${encodeURIComponent(args.assignmentId)}`
     : "";
   const displayCtaHref =
     ctaHref ||
-    (appUrl ? `${appUrl.replace(/\/$/, "")}/platform/supervisor/bandeja` : "");
+    (appUrl ? `${appUrl.replace(/\/$/, "")}/platform/task` : "");
 
   const p = String(args.prioridad ?? "").toLowerCase();
   // Chequear "NO URGENTE" ANTES que "urg" para evitar falsos positivos.
@@ -1188,7 +1188,7 @@ async function sendSupervisorAssignmentUpdatedEmail(
     `Vence: ${vence}`,
     displayCtaHref
       ? `Abre la tarea aquí: ${displayCtaHref}`
-      : `Abre Promas iCave y ve a tu bandeja de tareas.`,
+      : `Abre Promas iCave y ve a tu panel de tareas.`,
   ];
 
   const text = buildPlainEmail(textLines);

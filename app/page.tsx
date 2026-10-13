@@ -2,6 +2,7 @@ import { createClient } from "@/utils/supabase/server";
 import Image from "next/image";
 import Link from "next/link";
 import { redirect } from "next/navigation";
+import { resolveRoleForUser, dashboardForRole } from "@/lib/platform-roles";
 
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 
@@ -48,6 +49,17 @@ export default async function Home({
       redirect(`/?error=${encodeURIComponent(error.message)}`);
     }
 
+    // Resolver rol y redirigir directamente al dashboard correspondiente
+    const { data: { user } } = await supabase.auth.getUser();
+    if (user) {
+      try {
+        const role = await resolveRoleForUser(supabase, user.id, { email: user.email });
+        redirect(dashboardForRole(role));
+      } catch {
+        redirect("/platform");
+      }
+    }
+
     redirect("/platform");
   }
 
@@ -89,6 +101,16 @@ export default async function Home({
       );
     }
 
+    // Resolver rol y redirigir directamente al dashboard correspondiente
+    if (data.user) {
+      try {
+        const role = await resolveRoleForUser(supabase, data.user.id, { email: data.user.email });
+        redirect(dashboardForRole(role));
+      } catch {
+        redirect("/platform");
+      }
+    }
+
     redirect("/platform");
   }
 
@@ -116,7 +138,13 @@ export default async function Home({
     : null;
 
   if (isSupabaseConfigured && user && !errorParam && !messageParam) {
-    redirect("/platform");
+    try {
+      const supabase = await createClient();
+      const role = await resolveRoleForUser(supabase, user.id, { email: user.email });
+      redirect(dashboardForRole(role));
+    } catch {
+      redirect("/platform");
+    }
   }
 
   return (
