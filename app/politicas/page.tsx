@@ -5,7 +5,34 @@ type PolicySection = {
   bullets?: string[];
 };
 
+import type { Metadata } from "next";
+
+export const metadata: Metadata = {
+  title: "Politicas De Uso | Promas ICAVE",
+  description:
+    "Politicas de uso de la plataforma Promas ICAVE, desarrollada, disenada y creada por MetaWeb Dev Solutions para Icave.",
+  openGraph: {
+    title: "Politicas De Uso | Promas ICAVE",
+    description:
+      "Politicas de uso de la plataforma Promas ICAVE, desarrollada por MetaWeb Dev Solutions.",
+    type: "article",
+  },
+};
+
 const policySections: PolicySection[] = [
+  {
+    id: "desarrollo",
+    title: "Desarrollo de la plataforma",
+    body:
+      "Esta plataforma fue desarrollada, disenada y creada por MetaWeb Dev Solutions para Icave. MetaWeb Dev Solutions es la empresa responsable de la construccion tecnica, el diseno de la experiencia de usuario, la arquitectura del sistema y la implementacion de todas las funciones que integran esta plataforma institucional. Todo el desarrollo, la configuracion tecnologica y la puesta en marcha del producto se realizaron conforme a los requerimientos y especificaciones definidos por Icave.",
+    bullets: [
+      "Desarrollo de la plataforma y sus modulos principales.",
+      "Diseno de la interfaz y experiencia de usuario.",
+      "Implementacion de la arquitectura tecnica y bases de datos.",
+      "Configuracion de seguridad, accesos y roles.",
+      "Puesta en marcha y soporte tecnico inicial.",
+    ],
+  },
   {
     id: "objeto",
     title: "Objeto de la plataforma",

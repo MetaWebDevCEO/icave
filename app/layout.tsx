@@ -17,9 +17,11 @@ export const viewport: Viewport = {
 };
 
 export const metadata: Metadata = {
-  title: "Promas Icave",
-  description: "Gestor SoS",
+  title: "Promas ICAVE",
+  description:
+    "Plataforma de gestion operativa de Icave: acceso, seguimiento de actividades, asignacion de tareas, carga de archivos y monitoreo. Desarrollada por MetaWeb Dev Solutions.",
   applicationName: "Promas ICAVE",
+  authors: [{ name: "MetaWeb Dev Solutions" }],
   appleWebApp: {
     capable: true,
     title: "Promas ICAVE",
@@ -46,8 +48,9 @@ export const metadata: Metadata = {
   openGraph: {
     type: "website",
     siteName: "Promas ICAVE",
-    title: "Promas Icave",
-    description: "Gestor SoS",
+    title: "Promas ICAVE",
+    description:
+      "Plataforma de gestion operativa de Icave desarrollada por MetaWeb Dev Solutions.",
     images: [
       {
         url: FAVICON_URL,
@@ -57,8 +60,9 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: "summary",
-    title: "Promas Icave",
-    description: "Gestor SoS",
+    title: "Promas ICAVE",
+    description:
+      "Plataforma de gestion operativa de Icave desarrollada por MetaWeb Dev Solutions.",
     images: [FAVICON_URL],
   },
   metadataBase: (() => {
@@ -92,9 +96,31 @@ export default function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  const jsonLd = {
+    "@context": "https://schema.org",
+    "@type": "WebSite",
+    name: "Promas ICAVE",
+    description: "Plataforma de gestion de acceso, seguimiento de actividades, asignacion de tareas y monitoreo operativo de Icave.",
+    publisher: {
+      "@type": "Organization",
+      name: "ICAVE",
+    },
+    author: {
+      "@type": "Organization",
+      name: "MetaWeb Dev Solutions",
+      description: "Empresa de desarrollo de software responsable del desarrollo, diseno y creacion de la plataforma Promas ICAVE.",
+    },
+  };
+
   return (
-    <html lang="en" className={`${geistMono.variable} h-full antialiased overflow-x-hidden`}>
-      <body className="min-h-full flex flex-col overflow-x-hidden">{children}</body>
+    <html lang="es" className={`${geistMono.variable} h-full antialiased overflow-x-hidden`}>
+      <body className="min-h-full flex flex-col overflow-x-hidden">
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
+        />
+        {children}
+      </body>
     </html>
   );
 }
