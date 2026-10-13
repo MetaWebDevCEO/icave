@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { formatCalendarDateShort, parseAsCalendarDate } from "@/lib/calendar-date";
 import {
   maxEvidenceFiles,
@@ -174,6 +175,7 @@ export function TaskBoard({
   const [uploadProgress, setUploadProgress] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const router = useRouter();
 
   const selected = useMemo(() => {
     if (!openId) return null;
@@ -600,7 +602,25 @@ export function TaskBoard({
                             fd.set("assignment_id", selected.id);
                             fd.set("uploaded_paths", JSON.stringify(uploadedPaths));
                             await onSubmit(fd);
+                            // Éxito: limpiar estado, cerrar modal y refrescar
+                            setSelectedFiles([]);
+                            setUploadProgress(null);
+                            setOpenId(null);
+                            router.refresh();
                           } catch (err) {
+                            // Next.js redirect lanza un error especial; no lo tratamos
+                            // como error de subida si es un redirect exitoso.
+                            const isRedirect =
+                              err instanceof Error &&
+                              (err.message.includes("NEXT_REDIRECT") ||
+                                (err as { digest?: string }).digest?.startsWith("NEXT_REDIRECT"));
+                            if (isRedirect) {
+                              setSelectedFiles([]);
+                              setUploadProgress(null);
+                              setOpenId(null);
+                              router.refresh();
+                              return;
+                            }
                             const msg = err instanceof Error ? err.message : "Error al subir archivos.";
                             setUploadError(msg);
                             setUploadProgress(null);
