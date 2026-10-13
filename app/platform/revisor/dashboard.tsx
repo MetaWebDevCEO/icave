@@ -1,17 +1,17 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import {
-  Area,
-  AreaChart,
   Bar,
-  BarChart,
   CartesianGrid,
-  Cell,
-  Pie,
-  PieChart,
+  ComposedChart,
+  Line,
   XAxis,
   YAxis,
   ResponsiveContainer,
+  Cell,
+  Pie,
+  PieChart,
 } from "recharts";
 import {
   ChartContainer,
@@ -30,10 +30,7 @@ type Kpis = {
   avance: number;
 };
 
-type MonthlyPoint = { mes: string; creadas: number; entregadas: number };
-type StatusPoint = { mes: string; pendientes: number; encurso: number; completadas: number };
-type Slice = { name: string; value: number; key: string };
-type SupervisorRow = {
+type SupervisorCumplimiento = {
   email: string;
   label: string;
   total: number;
@@ -41,12 +38,24 @@ type SupervisorRow = {
   avance: number;
 };
 
+type DailyPoint = { dia: string; creadas: number; entregadas: number; total: number };
+
+type ImpactoAlto = {
+  total: number;
+  completadas: number;
+  pendientes: number;
+  avance: number;
+};
+
 type Props = {
   kpis: Kpis;
-  monthlySeries: MonthlyPoint[];
-  statusSeries: StatusPoint[];
-  priorityData: Slice[];
-  topSupervisores: SupervisorRow[];
+  cumplimientoSupervisores: SupervisorCumplimiento[];
+  dailySeries: DailyPoint[];
+  impactoAlto: ImpactoAlto;
+  diaMaxActividad: string;
+  diaMaxEntregas: number;
+  monthOptions: { value: string; label: string }[];
+  selectedMonth: string;
 };
 
 // Paleta de colores (editorial: negro, gris, ámbar, rojo, verde, azul)
@@ -87,244 +96,331 @@ function KpiCard({
   );
 }
 
-// ----- Gráfico de barras: Creadas vs Entregadas por mes -----
-function MonthlyChart({ data }: { data: MonthlyPoint[] }) {
+// ----- 1. Cumplimiento por supervisor (0-100%) -----
+function CumplimientoSupervisores({ data }: { data: SupervisorCumplimiento[] }) {
+  if (data.length === 0) {
+    return <Empty />;
+  }
+  return (
+    <div className="flex flex-col gap-2">
+      {data.slice(0, 12).map((s) => (
+        <div key={s.email} className="flex flex-col gap-1">
+          <div className="flex items-center justify-between text-xs">
+            <span className="truncate font-medium text-foreground" title={s.email}>
+              {s.label}
+            </span>
+            <span className="ml-3 shrink-0 font-mono tabular-nums text-muted-foreground">
+              {s.completadas}/{s.total} · {s.avance}%
+            </span>
+          </div>
+          <div className="h-2 w-full overflow-hidden rounded-full bg-zinc-100 dark:bg-zinc-800">
+            <div
+              className={`h-full rounded-full transition-all ${
+                s.avance >= 75
+                  ? "bg-green-600"
+                  : s.avance >= 50
+                    ? "bg-amber-500"
+                    : "bg-red-500"
+              }`}
+              style={{ width: `${s.avance}%` }}
+            />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ----- 2. Días de actividad del mes en curso (Combo: barras + línea) -----
+function DailyActivityChart({ data }: { data: DailyPoint[] }) {
   const config = {
-    creadas: { label: "Creadas", color: "#0a0a0a" },
+    creadas: { label: "Creadas", color: "#2563eb" },
     entregadas: { label: "Entregadas", color: "#16a34a" },
   } satisfies ChartConfig;
 
+  const hasAny = data.some((d) => d.total > 0);
+  if (!hasAny) return <Empty />;
+
+  // Calcular eje Y máximo para que la línea no quede abajo
+  const maxY = Math.max(...data.map((d) => Math.max(d.creadas, d.entregadas)), 1);
+
   return (
-    <ChartContainer config={config} className="h-[280px] w-full">
-      <BarChart data={data}>
+    <ChartContainer config={config} className="h-[300px] w-full">
+      <ComposedChart data={data}>
         <CartesianGrid vertical={false} strokeDasharray="3 3" />
         <XAxis
-          dataKey="mes"
+          dataKey="dia"
           tickLine={false}
           axisLine={false}
-          tickMargin={10}
+          tickMargin={8}
+          tick={{ fontSize: 10 }}
+          interval={data.length > 20 ? 2 : data.length > 10 ? 1 : 0}
         />
-        <YAxis tickLine={false} axisLine={false} width={28} allowDecimals={false} />
-        <ChartTooltip content={<ChartTooltipContent indicator="dashed" />} />
-        <Bar dataKey="creadas" fill="var(--color-creadas)" radius={[6, 6, 0, 0]} barSize={22} />
-        <Bar dataKey="entregadas" fill="var(--color-entregadas)" radius={[6, 6, 0, 0]} barSize={22} />
-      </BarChart>
-    </ChartContainer>
-  );
-}
-
-// ----- Area Chart apilado: evolución de estados por mes -----
-function StatusAreaChart({ data }: { data: StatusPoint[] }) {
-  const config = {
-    pendientes: { label: "Pendientes", color: "#d97706" },
-    encurso: { label: "En curso", color: "#2563eb" },
-    completadas: { label: "Completadas", color: "#16a34a" },
-  } satisfies ChartConfig;
-
-  return (
-    <ChartContainer config={config} className="h-[280px] w-full">
-      <AreaChart data={data}>
-        <defs>
-          <linearGradient id="gradPendientes" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="5%" stopColor="#d97706" stopOpacity={0.35} />
-            <stop offset="95%" stopColor="#d97706" stopOpacity={0.02} />
-          </linearGradient>
-          <linearGradient id="gradEnCurso" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="5%" stopColor="#2563eb" stopOpacity={0.35} />
-            <stop offset="95%" stopColor="#2563eb" stopOpacity={0.02} />
-          </linearGradient>
-          <linearGradient id="gradCompletadas" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="5%" stopColor="#16a34a" stopOpacity={0.35} />
-            <stop offset="95%" stopColor="#16a34a" stopOpacity={0.02} />
-          </linearGradient>
-        </defs>
-        <CartesianGrid vertical={false} strokeDasharray="3 3" />
-        <XAxis dataKey="mes" tickLine={false} axisLine={false} tickMargin={10} />
-        <YAxis tickLine={false} axisLine={false} width={28} allowDecimals={false} />
-        <ChartTooltip content={<ChartTooltipContent indicator="dot" />} />
-        <Area
-          type="monotone"
-          dataKey="pendientes"
-          stackId="st"
-          stroke="#d97706"
-          fill="url(#gradPendientes)"
-          strokeWidth={2}
-        />
-        <Area
-          type="monotone"
-          dataKey="encurso"
-          stackId="st"
-          stroke="#2563eb"
-          fill="url(#gradEnCurso)"
-          strokeWidth={2}
-        />
-        <Area
-          type="monotone"
-          dataKey="completadas"
-          stackId="st"
-          stroke="#16a34a"
-          fill="url(#gradCompletadas)"
-          strokeWidth={2}
-        />
-      </AreaChart>
-    </ChartContainer>
-  );
-}
-
-// ----- Donut -----
-function DonutChart({ data }: { data: Slice[] }) {
-  const config = data.reduce<ChartConfig>((acc, s, i) => {
-    acc[s.key] = { label: s.name, color: PALETTE[i % PALETTE.length] };
-    return acc;
-  }, {});
-
-  return (
-    <ChartContainer config={config} className="h-[260px] w-full">
-      <PieChart>
-        <ChartTooltip content={<ChartTooltipContent hideLabel />} />
-        <Pie
-          data={data}
-          dataKey="value"
-          nameKey="name"
-          innerRadius={55}
-          outerRadius={95}
-          paddingAngle={2}
-          stroke="none"
-        >
-          {data.map((s, i) => (
-            <Cell
-              key={s.key}
-              fill={PALETTE[i % PALETTE.length]}
-            />
-          ))}
-        </Pie>
-      </PieChart>
-    </ChartContainer>
-  );
-}
-
-// ----- Barras horizontales: Top supervisores -----
-function TopSupervisoresChart({ data }: { data: SupervisorRow[] }) {
-  const config = {
-    completadas: { label: "Completadas", color: "#0a0a0a" },
-  } satisfies ChartConfig;
-
-  return (
-    <ChartContainer config={config} className="h-[340px] w-full">
-      <BarChart data={data} layout="vertical" margin={{ left: 16 }}>
-        <CartesianGrid horizontal={false} strokeDasharray="3 3" />
-        <XAxis type="number" tickLine={false} axisLine={false} allowDecimals={false} />
         <YAxis
-          type="category"
-          dataKey="label"
           tickLine={false}
           axisLine={false}
-          width={110}
-          tick={{ fontSize: 11 }}
+          width={28}
+          allowDecimals={false}
+          domain={[0, maxY]}
         />
-        <ChartTooltip content={<ChartTooltipContent indicator="line" />} />
-        <Bar dataKey="completadas" fill="var(--color-completadas)" radius={[0, 6, 6, 0]} barSize={16} />
-      </BarChart>
+        <ChartTooltip content={<ChartTooltipContent indicator="dashed" />} />
+        <Bar
+          dataKey="creadas"
+          fill="var(--color-creadas)"
+          radius={[6, 6, 0, 0]}
+          barSize={14}
+        />
+        <Line
+          type="monotone"
+          dataKey="entregadas"
+          stroke="var(--color-entregadas)"
+          strokeWidth={2.5}
+          dot={{ r: 3, fill: "var(--color-entregadas)" }}
+          activeDot={{ r: 5 }}
+        />
+      </ComposedChart>
     </ChartContainer>
   );
 }
 
-// ----- Página principal -----
-export function RevisorDashboard({
-  kpis,
-  monthlySeries,
-  statusSeries,
-  priorityData,
-  topSupervisores,
-}: Props) {
+// ----- 3. Clasificación de Impacto (Alto: completadas vs pendientes) -----
+function ImpactoAltoChart({ data }: { data: ImpactoAlto }) {
+  const pieData = [
+    { name: "Completadas", value: data.completadas, key: "completadas" },
+    { name: "Pendientes", value: data.pendientes, key: "pendientes" },
+  ].filter((d) => d.value > 0);
+
+  const config = {
+    completadas: { label: "Completadas", color: "#16a34a" },
+    pendientes: { label: "Pendientes", color: "#dc2626" },
+  } satisfies ChartConfig;
+
+  if (data.total === 0) {
+    return <Empty />;
+  }
+
   return (
-    <div className="flex flex-col gap-8 p-6">
-      {/* Header */}
-      <div className="flex flex-col gap-1">
-        <h1 className="text-3xl font-semibold tracking-tight">Dashboard</h1>
-        <p className="text-sm text-muted-foreground">
-          Panorama general de asignaciones y desempeño del equipo.
-        </p>
-      </div>
-
-      {/* KPIs */}
-      <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-6">
-        <KpiCard label="Total" value={kpis.total} />
-        <KpiCard label="Completadas" value={kpis.completadas} tone="success" />
-        <KpiCard label="En curso" value={kpis.enCurso} />
-        <KpiCard label="Pendientes" value={kpis.pendientes} />
-        <KpiCard label="Vencidas" value={kpis.vencidas} tone="danger" />
-        <KpiCard label="% Avance" value={`${kpis.avance}%`} tone="success" />
-      </div>
-
-      {/* Gráfico mensual + Area chart por estado */}
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-        <div className="flex flex-col gap-3 rounded-2xl border border-border/60 bg-background p-5 lg:col-span-2">
-          <div className="flex items-baseline justify-between">
-            <h2 className="text-lg font-semibold tracking-tight">
-              Actividad mensual
-            </h2>
-            <span className="text-xs text-muted-foreground">Últimos 6 meses</span>
+    <div className="flex flex-col gap-4">
+      <ChartContainer config={config} className="h-[200px] w-full">
+        <PieChart>
+          <ChartTooltip content={<ChartTooltipContent hideLabel />} />
+          <Pie
+            data={pieData}
+            dataKey="value"
+            nameKey="name"
+            innerRadius={50}
+            outerRadius={85}
+            paddingAngle={2}
+            stroke="none"
+          >
+            {pieData.map((s, i) => (
+              <Cell
+                key={s.key}
+                fill={s.key === "completadas" ? "#16a34a" : "#dc2626"}
+              />
+            ))}
+          </Pie>
+        </PieChart>
+      </ChartContainer>
+      <div className="grid grid-cols-2 gap-3 text-center">
+        <div className="rounded-lg border border-border/60 p-3">
+          <div className="text-2xl font-semibold text-green-600">{data.completadas}</div>
+          <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+            Completadas
           </div>
-          <MonthlyChart data={monthlySeries} />
         </div>
-
-        <div className="flex flex-col gap-3 rounded-2xl border border-border/60 bg-background p-5">
-          <h2 className="text-lg font-semibold tracking-tight">Por estado</h2>
-          {statusSeries.length > 0 ? (
-            <StatusAreaChart data={statusSeries} />
-          ) : (
-            <Empty />
-          )}
-        </div>
-      </div>
-
-      {/* Top supervisores + Prioridad */}
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-        <div className="flex flex-col gap-3 rounded-2xl border border-border/60 bg-background p-5 lg:col-span-2">
-          <h2 className="text-lg font-semibold tracking-tight">
-            Top supervisores por entregas
-          </h2>
-          {topSupervisores.length > 0 ? (
-            <TopSupervisoresChart data={topSupervisores} />
-          ) : (
-            <Empty />
-          )}
-        </div>
-
-        <div className="flex flex-col gap-3 rounded-2xl border border-border/60 bg-background p-5">
-          <h2 className="text-lg font-semibold tracking-tight">Por prioridad</h2>
-          {priorityData.length > 0 ? (
-            <DonutChart data={priorityData} />
-          ) : (
-            <Empty />
-          )}
-          <LegendList data={priorityData} />
+        <div className="rounded-lg border border-border/60 p-3">
+          <div className="text-2xl font-semibold text-red-600">{data.pendientes}</div>
+          <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+            Pendientes
+          </div>
         </div>
       </div>
     </div>
   );
 }
 
-function LegendList({ data }: { data: Slice[] }) {
-  const total = data.reduce((acc, d) => acc + d.value, 0) || 1;
+// ----- 4. Día con Mayor Actividad (Grid Bar Chart) -----
+function DiaMaximoGridChart({
+  data,
+  diaMax,
+  entregasMax,
+}: {
+  data: DailyPoint[];
+  diaMax: string;
+  entregasMax: number;
+}) {
+  const totalEntregas = data.reduce((acc, d) => acc + d.entregadas, 0);
+  const maxValue = Math.max(...data.map((d) => d.entregadas), 1);
+  const GRID_ROWS = 10;
+
+  // Mostrar etiquetas cada N días para no saturar el eje X
+  const step = data.length > 20 ? 3 : data.length > 10 ? 2 : 1;
+
   return (
-    <ul className="flex flex-col gap-2">
-      {data.map((d, i) => (
-        <li key={d.key} className="flex items-center justify-between text-sm">
-          <span className="flex items-center gap-2">
-            <span
-              className="h-2.5 w-2.5 rounded-sm"
-              style={{ backgroundColor: PALETTE[i % PALETTE.length] }}
-            />
-            <span className="text-foreground">{d.name}</span>
-          </span>
-          <span className="font-mono tabular-nums text-muted-foreground">
-            {d.value} · {Math.round((d.value / total) * 100)}%
-          </span>
-        </li>
-      ))}
-    </ul>
+    <div className="flex h-full flex-col gap-4 rounded-2xl border border-border/60 bg-background p-5">
+      {/* Header con Total y Peak */}
+      <div className="flex items-start justify-between">
+        <div className="flex gap-6">
+          <div className="flex flex-col">
+            <span className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+              [Σ] Total entregas
+            </span>
+            <span className="text-3xl font-semibold tracking-tight text-foreground">
+              {totalEntregas.toLocaleString("es-MX")}
+            </span>
+          </div>
+          <div className="h-12 w-px bg-zinc-200 dark:bg-zinc-800" />
+          <div className="flex flex-col">
+            <span className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+              [↑] Peak
+            </span>
+            <span className="text-3xl font-semibold tracking-tight text-foreground">
+              {diaMax}
+            </span>
+            <span className="text-xs text-muted-foreground">
+              {entregasMax} {entregasMax === 1 ? "entrega" : "entregas"}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {/* Grid de bloques */}
+      <div className="flex min-h-0 flex-1 items-end gap-[3px]">
+        {data.map((d) => {
+          const filled = Math.round((d.entregadas / maxValue) * GRID_ROWS);
+          return (
+            <div
+              key={d.dia}
+              className="flex flex-1 flex-col-reverse gap-[2px]"
+              title={`Día ${d.dia}: ${d.entregadas} entrega(s)`}
+            >
+              {Array.from({ length: GRID_ROWS }).map((_, i) => (
+                <div
+                  key={i}
+                  className={`aspect-square w-full rounded-[2px] ${
+                    i < filled
+                      ? "bg-zinc-900 dark:bg-zinc-100"
+                      : "bg-zinc-200/70 dark:bg-zinc-800"
+                  }`}
+                />
+              ))}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Eje X: días */}
+      <div className="flex gap-[3px]">
+        {data.map((d, idx) => (
+          <div
+            key={d.dia}
+            className="flex-1 text-center text-[9px] text-muted-foreground"
+          >
+            {(idx % step === 0 || idx === data.length - 1) ? d.dia : ""}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ----- Página principal -----
+export function RevisorDashboard({
+  kpis,
+  cumplimientoSupervisores,
+  dailySeries,
+  impactoAlto,
+  diaMaxActividad,
+  diaMaxEntregas,
+  monthOptions,
+  selectedMonth,
+}: Props) {
+  const router = useRouter();
+
+  const handleMonthChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const mes = e.target.value;
+    router.replace(`/platform/revisor?mes=${mes}`);
+  };
+
+  return (
+    <div className="flex flex-col gap-8 p-6">
+      {/* Header */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        <div className="flex flex-col gap-1">
+          <h1 className="text-3xl font-semibold tracking-tight">Dashboard</h1>
+          <p className="text-sm text-muted-foreground">
+            Cumplimiento, actividad e impacto de las asignaciones.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <label
+            htmlFor="mes-select"
+            className="text-xs font-medium uppercase tracking-[0.12em] text-muted-foreground"
+          >
+            Mes
+          </label>
+          <select
+            id="mes-select"
+            value={selectedMonth}
+            onChange={handleMonthChange}
+            className="h-9 rounded-lg border border-zinc-200 bg-white px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-zinc-900 dark:border-zinc-700 dark:bg-zinc-900"
+          >
+            {monthOptions.map((m) => (
+              <option key={m.value} value={m.value}>
+                {m.label}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      {/* Fila 1: Cumplimiento por supervisor + Día con mayor actividad */}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+        <div className="flex flex-col gap-3 rounded-2xl border border-border/60 bg-background p-5 lg:col-span-2">
+          <div className="flex items-baseline justify-between">
+            <h2 className="text-lg font-semibold tracking-tight">
+              Cumplimiento de Actividades
+            </h2>
+            <span className="text-xs text-muted-foreground">
+              Por supervisor · 0–100%
+            </span>
+          </div>
+          <CumplimientoSupervisores data={cumplimientoSupervisores} />
+        </div>
+
+        <DiaMaximoGridChart
+          data={dailySeries}
+          diaMax={diaMaxActividad}
+          entregasMax={diaMaxEntregas}
+        />
+      </div>
+
+      {/* Fila 2: Días de actividad + Clasificación de impacto */}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+        <div className="flex flex-col gap-3 rounded-2xl border border-border/60 bg-background p-5 lg:col-span-2">
+          <div className="flex items-baseline justify-between">
+            <h2 className="text-lg font-semibold tracking-tight">
+              Días de Actividad
+            </h2>
+            <span className="text-xs text-muted-foreground">Mes en curso</span>
+          </div>
+          <DailyActivityChart data={dailySeries} />
+        </div>
+
+        <div className="flex flex-col gap-3 rounded-2xl border border-border/60 bg-background p-5">
+          <div className="flex items-baseline justify-between">
+            <h2 className="text-lg font-semibold tracking-tight">
+              Clasificación de Impacto
+            </h2>
+            <span className="text-xs text-muted-foreground">
+              Alto · {impactoAlto.avance}%
+            </span>
+          </div>
+          <ImpactoAltoChart data={impactoAlto} />
+        </div>
+      </div>
+    </div>
   );
 }
 

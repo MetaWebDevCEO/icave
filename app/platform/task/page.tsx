@@ -30,7 +30,7 @@ import {
   type SubmissionFile,
 } from "@/lib/submission-files";
 
-export const revalidate = 15;
+export const revalidate = 60;
 
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 
@@ -71,7 +71,7 @@ async function bestEffortSyncSubmission(
   console.log("[bestEffortSync] payload full.submission_path:", full.submission_path);
     const withDesc = (p: Record<string, unknown>) => ({
       ...p,
-      status: "Completada",
+      status: "Entregada",
       description: mergedDescription,
       submitted_at: syncedAt,
       submitted_by_email: submittedByEmail ?? null,
@@ -923,30 +923,10 @@ export default async function TaskPage({
           );
         }
 
-        if (foundFiles.length === 0) {
-          try {
-            const root = await storageClient.storage
-              .from("asignaciones")
-              .list("entregas", { limit: 500, offset: 0 });
-            if (root.data && root.data.length > 0) {
-              for (const folder of root.data) {
-                if (folder.id) continue;
-                const candidate = await listEvidenceInFolder(
-                  storageClient,
-                  "asignaciones",
-                  `entregas/${folder.name}/${row.id}`
-                );
-                if (candidate.length > 0) {
-                  foundFiles = candidate;
-                  break;
-                }
-              }
-            }
-          } catch {
-            /* sin acceso a listado root: seguimos sin archivos */
-          }
-        }
-
+        // NOTA: se eliminó el escaneo brute-force de TODAS las carpetas de
+        // entregas/ (O(assignments × users)) porque era el cuello de botella
+        // principal. Si el ownerUserId no se pudo resolver, simplemente se
+        // salta la búsqueda en storage y se muestra la tarea sin evidencia.
         if (foundFiles.length === 0) return row;
 
         const ownerEmail =
@@ -979,7 +959,7 @@ export default async function TaskPage({
                 derivedStatus.toLowerCase().includes("todo") ||
                 derivedStatus.toLowerCase().includes("nueva") ||
                 derivedStatus.toLowerCase().includes("nuevo")
-              ? "Completada"
+              ? "Entregada"
               : row.status,
           submission_path: primary?.path ?? row.submission_path,
           submission_name:

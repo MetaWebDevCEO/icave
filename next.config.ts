@@ -19,6 +19,11 @@ const nextConfig: NextConfig = {
       // permitía requests gigantes que bogaban el server)
       bodySizeLimit: "30mb",
     },
+    // Límite del cuerpo de la request que pasa por proxy.
+    // Sin esto, el body se trunca a 10MB antes de llegar a las server actions
+    // y el parser de formularios multipart falla con "Unexpected end of form".
+    // 3 archivos × 10MB = 30MB + margen para overhead multipart.
+    proxyClientMaxBodySize: "35mb",
     // Importa solo lo que usas de estas librerías (tree-shake heavy)
     optimizePackageImports: [
       "@supabase/supabase-js",

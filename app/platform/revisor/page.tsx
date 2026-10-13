@@ -20,10 +20,11 @@ type AssignmentStat = {
 };
 
 // Matchers de status (alineados con task/page.tsx)
+// "Entregada" cuenta como en_curso (entregado, pendiente de revisión), NO como completada
 const isCompletedStatus = (s: string) =>
-  /comp|done|termin|final|cerrad|entreg/.test(s);
+  /comp|done|termin|final|cerrad/.test(s);
 const isProgressStatus = (s: string) =>
-  /prog|curso|inici|ejecu|desarr/.test(s);
+  /prog|curso|inici|ejecu|desarr|entreg/.test(s);
 const isPendingStatus = (s: string) =>
   /pend|asign|abiert|nueva/.test(s) || s === "";
 
@@ -38,6 +39,10 @@ const parseDate = (v: string | null): Date | null => {
 const ymKey = (d: Date) =>
   `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
 
+// Obtener clave "YYYY-MM-DD" en UTC
+const ymdKey = (d: Date) =>
+  `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
+
 // Label corto "Sep 26"
 const monthLabel = (ym: string) => {
   const [y, m] = ym.split("-").map(Number);
@@ -45,7 +50,27 @@ const monthLabel = (ym: string) => {
   return d.toLocaleDateString("es-MX", { month: "short", year: "2-digit" });
 };
 
-export default async function RevisorDashboardPage() {
+// Label de día "12"
+const dayLabel = (ymd: string) => {
+  const parts = ymd.split("-").map(Number);
+  return String(parts[2]);
+};
+
+// Detectar si es prioridad urgente (impacto alto)
+const isHighImpact = (p: string | null) => {
+  const pl = (p ?? "").trim().toLowerCase();
+  if (!pl) return false;
+  if (pl === "urgente") return true;
+  if (pl.includes("no urg")) return false;
+  if (pl.includes("urg")) return true;
+  return false;
+};
+
+export default async function RevisorDashboardPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ mes?: string }>;
+}) {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
@@ -77,126 +102,180 @@ export default async function RevisorDashboardPage() {
   const sections = buildSections(role);
 
   // -------------------------------------------------------------------
-  // Carga de asignaciones (todas, para panorama completo)
+  // Determinar mes seleccionado (default: mes actual)
   // -------------------------------------------------------------------
-  const { data: assignments } = await supabase
-    .from("asignaciones")
-    .select(
-      "id, status, created_at, due_at, submitted_at, priority, assigned_to_email"
-    )
-    .order("created_at", { ascending: false })
-    .limit(2000);
+  const sp = await searchParams;
+  const today = new Date();
+  const currentYm = ymKey(new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 1)));
+  const selectedYm = sp?.mes && /^\d{4}-\d{2}$/.test(sp.mes) ? sp.mes : currentYm;
+  const [selYear, selMonth] = selectedYm.split("-").map(Number);
 
-  const rows: AssignmentStat[] = (assignments ?? []) as AssignmentStat[];
+  // Generar lista de meses para el selector (Enero 2026 a Diciembre 2026)
+  const monthOptions: { value: string; label: string }[] = [];
+  for (let m = 1; m <= 12; m++) {
+    const ym = `2026-${String(m).padStart(2, "0")}`;
+    monthOptions.push({ value: ym, label: monthLabel(ym) });
+  }
+
+  // -------------------------------------------------------------------
+  // INTENTO 1: Leer desde la tabla agregada monthly_dashboard_stats
+  // (se actualiza automáticamente vía trigger sobre asignaciones).
+  // Si la tabla no existe o no hay fila para el mes, cae al cálculo en JS.
+  // -------------------------------------------------------------------
+  type MonthlyStatRow = {
+    month_key: string;
+    total: number;
+    completadas: number;
+    en_curso: number;
+    pendientes: number;
+    vencidas: number;
+    avance: number;
+    supervisor_compliance: unknown;
+    daily_series: unknown;
+    alto_impacto_total: number;
+    alto_impacto_completadas: number;
+    alto_impacto_pendientes: number;
+    alto_impacto_avance: number;
+    dia_max_actividad: string | null;
+    dia_max_entregas: number;
+  };
+
+  const { data: statRow, error: statErr } = await supabase
+    .from("monthly_dashboard_stats")
+    .select("*")
+    .eq("month_key", selectedYm)
+    .maybeSingle();
+
+  if (!statErr && statRow) {
+    const r = statRow as MonthlyStatRow;
+    const supArr = Array.isArray(r.supervisor_compliance) ? r.supervisor_compliance : [];
+    const dailyArr = Array.isArray(r.daily_series) ? r.daily_series : [];
+    return (
+      <PlatformShell
+        sections={sections}
+        currentUserId={user.id}
+        currentUserEmail={user.email ?? undefined}
+      >
+        <RevisorDashboard
+          kpis={{
+            total: r.total,
+            completadas: r.completadas,
+            enCurso: r.en_curso,
+            pendientes: r.pendientes,
+            vencidas: r.vencidas,
+            avance: r.avance,
+          }}
+          cumplimientoSupervisores={supArr as any}
+          dailySeries={dailyArr as any}
+          impactoAlto={{
+            total: r.alto_impacto_total,
+            completadas: r.alto_impacto_completadas,
+            pendientes: r.alto_impacto_pendientes,
+            avance: r.alto_impacto_avance,
+          }}
+          diaMaxActividad={r.dia_max_actividad || "—"}
+          diaMaxEntregas={r.dia_max_entregas}
+          monthOptions={monthOptions}
+          selectedMonth={selectedYm}
+        />
+      </PlatformShell>
+    );
+  }
+
+  // -------------------------------------------------------------------
+  // Carga de asignaciones (misma consulta que /platform/task para el revisor)
+  // -------------------------------------------------------------------
+  const selectFieldsBase =
+    "id, created_at, status, title, description, due_at, priority, revisor_id, assigned_to_email";
+  const selectFieldsMid =
+    "id, created_at, status, title, description, due_at, priority, revisor_id, assigned_to_email, submission_path, submission_files, submitted_at, submitted_by_email";
+  const selectFieldsExtended =
+    "id, created_at, status, title, description, due_at, priority, revisor_id, assigned_to_email, submission_name, submission_path, submission_files, submitted_at, submitted_by_email";
+
+  // Fallback de esquema igual que en task/page.tsx
+  const isSchemaMismatch = (err: unknown) => {
+    if (!err) return false;
+    const msg = (err as { message?: string }).message ?? "";
+    return msg.includes("column") && msg.includes("does not exist");
+  };
+
+  let assignmentsData: AssignmentStat[] = [];
+
+  const fetchAssignments = async (fields: string): Promise<AssignmentStat[]> => {
+    const { data, error } = await supabase
+      .from("asignaciones")
+      .select(fields)
+      .order("created_at", { ascending: false })
+      .limit(5000);
+    if (error) {
+      if (isSchemaMismatch(error)) throw new Error("schema_mismatch");
+      return [];
+    }
+    return (data as unknown) as AssignmentStat[];
+  };
+
+  try {
+    assignmentsData = await fetchAssignments(selectFieldsExtended);
+  } catch {
+    try {
+      assignmentsData = await fetchAssignments(selectFieldsMid);
+    } catch {
+      assignmentsData = await fetchAssignments(selectFieldsBase);
+    }
+  }
+
+  const rows: AssignmentStat[] = assignmentsData;
+
+  // -------------------------------------------------------------------
+  // Filtrar por mes seleccionado (igual que supervisores: cualquier fecha
+  // [created_at, due_at, submitted_at] que caiga en el mes cuenta)
+  // -------------------------------------------------------------------
+  const monthStart = Date.UTC(selYear, selMonth - 1, 1);
+  const monthEnd = Date.UTC(selYear, selMonth, 1); // primer día del sig. mes (exclusivo)
+
+  const fallsInMonth = (r: AssignmentStat): boolean => {
+    const dates = [parseDate(r.created_at), parseDate(r.due_at), parseDate(r.submitted_at)];
+    return dates.some((d) => {
+      if (!d) return false;
+      const t = d.getTime();
+      return t >= monthStart && t < monthEnd;
+    });
+  };
+
+  const monthRows = rows.filter(fallsInMonth);
 
   // -------------------------------------------------------------------
   // KPIs
   // -------------------------------------------------------------------
-  const total = rows.length;
-  const completadas = rows.filter((r) =>
+  const total = monthRows.length;
+  const completadas = monthRows.filter((r) =>
     isCompletedStatus((r.status ?? "").trim().toLowerCase())
   ).length;
-  const enCurso = rows.filter((r) => {
+  const enCurso = monthRows.filter((r) => {
     const s = (r.status ?? "").trim().toLowerCase();
     return isProgressStatus(s) && !isCompletedStatus(s);
   }).length;
-  const pendientes = rows.filter((r) => {
+  const pendientes = monthRows.filter((r) => {
     const s = (r.status ?? "").trim().toLowerCase();
     return isPendingStatus(s) && !isCompletedStatus(s);
   }).length;
 
-  const now = Date.now();
-  const vencidas = rows.filter((r) => {
+  // Vencidas: asignaciones del mes con due_at anterior al fin del mes y no completadas
+  const vencidas = monthRows.filter((r) => {
     const s = (r.status ?? "").trim().toLowerCase();
     if (isCompletedStatus(s)) return false;
     const due = parseDate(r.due_at);
-    return due ? due.getTime() < now : false;
+    return due ? due.getTime() < monthEnd : false;
   }).length;
 
   const avance = total > 0 ? Math.round((completadas / total) * 100) : 0;
 
   // -------------------------------------------------------------------
-  // Serie mensual (últimos 6 meses incluyendo el actual)
-  // -------------------------------------------------------------------
-  const today = new Date();
-  const months: string[] = [];
-  for (let i = 5; i >= 0; i--) {
-    const d = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() - i, 1));
-    months.push(ymKey(d));
-  }
-
-  const inMonth = (iso: string | null, monthStart: number, monthEnd: number) => {
-    const d = parseDate(iso);
-    return d ? d.getTime() >= monthStart && d.getTime() < monthEnd : false;
-  };
-
-  const monthlySeries = months.map((ym) => {
-    const [y, m] = ym.split("-").map(Number);
-    const monthStart = Date.UTC(y, m - 1, 1);
-    const monthEnd = Date.UTC(y, m, 1); // primer día del siguiente mes (exclusivo)
-
-    const creadas = rows.filter((r) => inMonth(r.created_at, monthStart, monthEnd)).length;
-    const entregadas = rows.filter((r) =>
-      inMonth(r.submitted_at, monthStart, monthEnd)
-    ).length;
-
-    return { mes: monthLabel(ym), creadas, entregadas };
-  });
-
-  // Serie mensual de ESTADOS para el Area Chart apilado.
-  // Para cada mes contamos cuántas tareas CREADAS en ese mes tienen cada status.
-  const statusSeries = months.map((ym) => {
-    const [y, m] = ym.split("-").map(Number);
-    const monthStart = Date.UTC(y, m - 1, 1);
-    const monthEnd = Date.UTC(y, m, 1);
-
-    let pendientes = 0;
-    let encurso = 0;
-    let completadas = 0;
-
-    rows.forEach((r) => {
-      if (!inMonth(r.created_at, monthStart, monthEnd)) return;
-      const s = (r.status ?? "").trim().toLowerCase();
-      if (isCompletedStatus(s)) completadas++;
-      else if (isProgressStatus(s)) encurso++;
-      else pendientes++;
-    });
-
-    return { mes: monthLabel(ym), pendientes, encurso, completadas };
-  });
-
-  // -------------------------------------------------------------------
-  // Distribución por prioridad
-  // -------------------------------------------------------------------
-  let urgente = 0;
-  let medio = 0;
-  let noUrgente = 0;
-  let sinPrioridad = 0;
-  rows.forEach((r) => {
-    const p = (r.priority ?? "").trim();
-    const pl = p.toLowerCase();
-    if (!p) sinPrioridad++;
-    else if (pl === "urgente") urgente++;
-    else if (pl === "medio") medio++;
-    else if (pl === "no urgente") noUrgente++;
-    else if (pl.includes("urg") && !pl.includes("no")) urgente++;
-    else if (pl.includes("no urg")) noUrgente++;
-    else if (pl.includes("med")) medio++;
-    else sinPrioridad++;
-  });
-
-  const priorityData = [
-    { name: "Urgente", value: urgente, key: "urgente" },
-    { name: "Medio", value: medio, key: "medio" },
-    { name: "No Urgente", value: noUrgente, key: "nourgente" },
-    { name: "Sin prioridad", value: sinPrioridad, key: "sinprioridad" },
-  ].filter((x) => x.value > 0);
-
-  // -------------------------------------------------------------------
-  // Top supervisores por tareas completadas
+  // 1. Cumplimiento de Actividades por supervisor (0-100%)
+  //    Usa las asignaciones CREADAS en el mes seleccionado (1 al último día)
   // -------------------------------------------------------------------
   const supervisorCounts = new Map<string, { total: number; completadas: number }>();
-  rows.forEach((r) => {
+  monthRows.forEach((r) => {
     const email = (r.assigned_to_email ?? "").trim().toLowerCase();
     if (!email) return;
     const existing = supervisorCounts.get(email) ?? { total: 0, completadas: 0 };
@@ -206,19 +285,67 @@ export default async function RevisorDashboardPage() {
     supervisorCounts.set(email, existing);
   });
 
-  const topSupervisores = Array.from(supervisorCounts.entries())
+  const cumplimientoSupervisores = Array.from(supervisorCounts.entries())
     .map(([email, c]) => ({
       email,
       total: c.total,
       completadas: c.completadas,
       avance: c.total > 0 ? Math.round((c.completadas / c.total) * 100) : 0,
+      label: email.split("@")[0].slice(0, 22),
     }))
-    .sort((a, b) => b.completadas - a.completadas)
-    .slice(0, 10)
-    .map((s) => ({
-      ...s,
-      label: s.email.split("@")[0].slice(0, 18),
-    }));
+    .sort((a, b) => b.avance - a.avance || b.total - a.total);
+
+  // -------------------------------------------------------------------
+  // 2. Días de Actividad (mes SELECCIONADO) - creadas vs entregadas por día
+  // -------------------------------------------------------------------
+  const yearNow = selYear;
+  const monthNow = selMonth - 1; // meses en JS son 0-indexed
+  const daysInMonth = new Date(Date.UTC(yearNow, monthNow + 1, 0)).getUTCDate();
+
+  const inDay = (iso: string | null, dayStart: number, dayEnd: number) => {
+    const d = parseDate(iso);
+    return d ? d.getTime() >= dayStart && d.getTime() < dayEnd : false;
+  };
+
+  const dailySeries = [];
+  for (let day = 1; day <= daysInMonth; day++) {
+    const dayStart = Date.UTC(yearNow, monthNow, day);
+    const dayEnd = Date.UTC(yearNow, monthNow, day + 1);
+
+    const creadas = rows.filter((r) => inDay(r.created_at, dayStart, dayEnd)).length;
+    const entregadas = rows.filter((r) => inDay(r.submitted_at, dayStart, dayEnd)).length;
+
+    dailySeries.push({
+      dia: String(day),
+      creadas,
+      entregadas,
+      total: creadas + entregadas,
+    });
+  }
+
+  // -------------------------------------------------------------------
+  // 3. Clasificación de Impacto (tareas urgentes: completadas vs pendientes)
+  // -------------------------------------------------------------------
+  const altoImpacto = monthRows.filter((r) => isHighImpact(r.priority));
+  const altoImpactoTotal = altoImpacto.length;
+  const altoImpactoCompletadas = altoImpacto.filter((r) =>
+    isCompletedStatus((r.status ?? "").trim().toLowerCase())
+  ).length;
+  const altoImpactoPendientes = altoImpactoTotal - altoImpactoCompletadas;
+  const altoImpactoAvance =
+    altoImpactoTotal > 0 ? Math.round((altoImpactoCompletadas / altoImpactoTotal) * 100) : 0;
+
+  // -------------------------------------------------------------------
+  // 4. Día con Mayor Actividad (día del mes con más entregas/subidas)
+  // -------------------------------------------------------------------
+  let diaMaxActividad = "";
+  let maxEntregas = 0;
+  dailySeries.forEach((d) => {
+    if (d.entregadas > maxEntregas) {
+      maxEntregas = d.entregadas;
+      diaMaxActividad = d.dia;
+    }
+  });
 
   return (
     <PlatformShell
@@ -228,10 +355,18 @@ export default async function RevisorDashboardPage() {
     >
       <RevisorDashboard
         kpis={{ total, completadas, enCurso, pendientes, vencidas, avance }}
-        monthlySeries={monthlySeries}
-        statusSeries={statusSeries}
-        priorityData={priorityData}
-        topSupervisores={topSupervisores}
+        cumplimientoSupervisores={cumplimientoSupervisores}
+        dailySeries={dailySeries}
+        impactoAlto={{
+          total: altoImpactoTotal,
+          completadas: altoImpactoCompletadas,
+          pendientes: altoImpactoPendientes,
+          avance: altoImpactoAvance,
+        }}
+        diaMaxActividad={diaMaxActividad || "—"}
+        diaMaxEntregas={maxEntregas}
+        monthOptions={monthOptions}
+        selectedMonth={selectedYm}
       />
     </PlatformShell>
   );

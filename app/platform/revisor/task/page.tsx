@@ -22,7 +22,7 @@ import {
   type SubmissionFile,
 } from "@/lib/submission-files";
 
-export const revalidate = 15;
+export const revalidate = 60;
 
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 
@@ -124,7 +124,7 @@ async function bestEffortSyncSubmission(
   }));
 
   const fullPayload: Record<string, unknown> = {
-    status: "Completada",
+    status: "Entregada",
     description: mergedDescription,
     submission_path: primaryPath,
     submission_name: primary.name,
@@ -135,7 +135,7 @@ async function bestEffortSyncSubmission(
   };
 
   const midPayload: Record<string, unknown> = {
-    status: "Completada",
+    status: "Entregada",
     description: mergedDescription,
     submission_path: primaryPath,
     submission_files: filesJson,
@@ -144,7 +144,7 @@ async function bestEffortSyncSubmission(
   };
 
   const fallbackPayload: Record<string, unknown> = {
-    status: "Completada",
+    status: "Entregada",
     description: mergedDescription,
   };
 
@@ -293,30 +293,10 @@ export default async function RevisorTaskPage({
           found = await findSubmissionInStorage(storageClient, ownerUserId, row.id);
         }
 
-        if (!found) {
-          try {
-            const root = await storageClient.storage
-              .from("asignaciones")
-              .list("entregas", { limit: 500, offset: 0 });
-            if (root.data && root.data.length > 0) {
-              for (const folder of root.data) {
-                if (folder.id) continue;
-                const candidate = await findSubmissionInStorage(
-                  storageClient,
-                  folder.name,
-                  row.id
-                );
-                if (candidate && candidate.length > 0) {
-                  found = candidate;
-                  break;
-                }
-              }
-            }
-          } catch {
-            /* sin listado root: no hay fallback */
-          }
-        }
-
+        // NOTA: se eliminó el escaneo brute-force de TODAS las carpetas de
+        // entregas/ (O(assignments × users)) porque era el cuello de botella
+        // principal. Si el ownerUserId no se pudo resolver, se muestra la
+        // tarea sin evidencia.
         if (!found || found.length === 0) return row;
 
         const filesArr = found.filter((f) => isValidSubmissionPath(f.path));
@@ -357,7 +337,7 @@ export default async function RevisorTaskPage({
             syncError
               ? row.status
               : statusIsOpen
-                ? "Completada"
+                ? "Entregada"
                 : row.status,
           submission_path: primaryPath,
           submission_name: row.submission_name ?? primaryName,
@@ -623,6 +603,102 @@ export default async function RevisorTaskPage({
     redirect(`${BASE_PATH}?message=` + encodeURIComponent("Comentario enviado."));
   }
 
+  async function markCompleted(formData: FormData) {
+    "use server";
+
+    const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    if (!url || !anonKey || url.includes("__REPLACE_ME__") || anonKey.includes("__REPLACE_ME__")) {
+      redirect("/?error=" + encodeURIComponent("Configura Supabase primero (env vars)."));
+    }
+
+    const assignmentId = String(formData.get("assignment_id") ?? "").trim();
+    if (!assignmentId) {
+      redirect(`${BASE_PATH}?error=` + encodeURIComponent("Falta assignment_id."));
+    }
+
+    const supabase = await createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) {
+      redirect(`${BASE_PATH}?error=` + encodeURIComponent("Sesión inválida."));
+    }
+
+    const role = await (async () => {
+      const strong = await strongCheckIsRevisor(supabase, user.id, {
+        email: user.email ?? null,
+      });
+      return strong.decidedRole;
+    })();
+    if (role !== "revisor") {
+      redirect(`${BASE_PATH}?error=` + encodeURIComponent("No tienes permisos."));
+    }
+
+    const admin =
+      serviceKey && !serviceKey.includes("__REPLACE_ME__")
+        ? createSupabaseAdminClient(url, serviceKey, {
+            auth: { persistSession: false, autoRefreshToken: false },
+          })
+        : null;
+
+    const verifyA = await supabase
+      .from("asignaciones")
+      .select("id, revisor_id")
+      .eq("id", assignmentId)
+      .maybeSingle();
+
+    let row = verifyA.data as { revisor_id?: string | null } | null;
+    let rowError = verifyA.error;
+
+    if ((!row || rowError) && admin) {
+      const verifyB = await admin
+        .from("asignaciones")
+        .select("id, revisor_id")
+        .eq("id", assignmentId)
+        .maybeSingle();
+      row = verifyB.data as { revisor_id?: string | null } | null;
+      rowError = verifyB.error;
+    }
+
+    if (rowError) {
+      redirect(`${BASE_PATH}?error=` + encodeURIComponent(rowError.message));
+    }
+    if (!row) {
+      redirect(`${BASE_PATH}?error=` + encodeURIComponent("La asignación no existe."));
+    }
+
+    const payloadWithCompleted: Record<string, unknown> = {
+      status: "Completada",
+      completed_at: new Date().toISOString(),
+    };
+    const payloadSimple: Record<string, unknown> = {
+      status: "Completada",
+    };
+
+    const tryUpdate = async (payload: Record<string, unknown>) => {
+      const first = await supabase.from("asignaciones").update(payload).eq("id", assignmentId);
+      if (!first.error) return null;
+      if (!admin) return first.error;
+      const second = await admin.from("asignaciones").update(payload).eq("id", assignmentId);
+      return second.error;
+    };
+
+    let updateError = await tryUpdate(payloadWithCompleted);
+    if (updateError && isSchemaMismatch(updateError)) {
+      updateError = await tryUpdate(payloadSimple);
+    }
+
+    if (updateError) {
+      redirect(`${BASE_PATH}?error=` + encodeURIComponent(updateError.message));
+    }
+
+    revalidatePath(BASE_PATH);
+    redirect(`${BASE_PATH}?message=` + encodeURIComponent("Tarea marcada como completada."));
+  }
+
   return (
     <TaskPageContent
       role={role}
@@ -639,6 +715,7 @@ export default async function RevisorTaskPage({
       downloadBasePath={`${BASE_PATH}/download`}
       onSaveComment={saveComment}
       onDelete={deleteAssignment}
+      onMarkCompleted={markCompleted}
     />
   );
 }

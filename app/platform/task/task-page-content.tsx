@@ -27,6 +27,7 @@ type Props = {
   onSaveComment: (formData: FormData) => Promise<void>;
   onDelete: (formData: FormData) => Promise<void>;
   onDeleteEvidence?: (formData: FormData) => Promise<void>;
+  onMarkCompleted?: (formData: FormData) => Promise<void>;
 };
 
 function filterClass(statusFilter: string, key: string, value: string) {
@@ -73,6 +74,7 @@ export function TaskPageContent({
   onSaveComment,
   onDelete,
   onDeleteEvidence,
+  onMarkCompleted,
 }: Props) {
   const preserve: Record<string, string | undefined> = {
     status: statusFilter && statusFilter !== "all" ? statusFilter : undefined,
@@ -272,6 +274,7 @@ export function TaskPageContent({
             onSaveComment={onSaveComment}
             onDelete={onDelete}
             onDeleteEvidence={onDeleteEvidence}
+            onMarkCompleted={onMarkCompleted}
           />
         )}
       </div>

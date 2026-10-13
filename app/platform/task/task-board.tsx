@@ -61,6 +61,9 @@ function getStatusTone(status: string | null | undefined) {
   if (normalized.includes("comp") || normalized.includes("done")) {
     return "bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-200 dark:bg-emerald-950/30 dark:text-emerald-200 dark:ring-emerald-900";
   }
+  if (normalized.includes("entreg")) {
+    return "bg-violet-50 text-violet-700 ring-1 ring-inset ring-violet-200 dark:bg-violet-950/30 dark:text-violet-200 dark:ring-violet-900";
+  }
   if (normalized.includes("prog") || normalized.includes("curso")) {
     return "bg-blue-50 text-blue-700 ring-1 ring-inset ring-blue-200 dark:bg-blue-950/30 dark:text-blue-200 dark:ring-blue-900";
   }
@@ -152,6 +155,7 @@ export function TaskBoard({
   onSaveComment,
   onDelete,
   onDeleteEvidence,
+  onMarkCompleted,
 }: {
   role: UserRole;
   currentUserId: string;
@@ -161,6 +165,7 @@ export function TaskBoard({
   onSaveComment: (formData: FormData) => Promise<void>;
   onDelete: (formData: FormData) => Promise<void>;
   onDeleteEvidence?: (formData: FormData) => Promise<void>;
+  onMarkCompleted?: (formData: FormData) => Promise<void>;
 }) {
   const [openId, setOpenId] = useState<string | null>(null);
   const [submissionSizeError, setSubmissionSizeError] = useState<string | null>(null);
@@ -385,11 +390,31 @@ export function TaskBoard({
                   <div className="text-sm font-medium text-zinc-950 dark:text-zinc-50">
                     Estado de la tarea
                   </div>
-                  <div className="mt-1.5 text-sm text-zinc-700 dark:text-zinc-300">
-                    {isCompleted(selected.status)
-                      ? "Completada por el supervisor."
-                      : "Aún pendiente de entrega."}
-                  </div>
+                  {onMarkCompleted &&
+                    selectedHasDelivery &&
+                    !isCompleted(selected.status) ? (
+                      <form action={onMarkCompleted} className="mt-3">
+                        <input
+                          type="hidden"
+                          name="assignment_id"
+                          value={selected.id}
+                        />
+                        <button
+                          type="submit"
+                          className="inline-flex h-10 w-full items-center justify-center rounded-md bg-emerald-600 px-4 text-sm font-medium text-white hover:bg-emerald-700 dark:bg-emerald-500 dark:hover:bg-emerald-600"
+                        >
+                          Marcar como completada
+                        </button>
+                      </form>
+                    ) : (
+                      <div className="mt-1.5 text-sm text-zinc-700 dark:text-zinc-300">
+                        {isCompleted(selected.status)
+                          ? "Completada por el supervisor."
+                          : selectedHasDelivery
+                            ? "Entregada — pendiente de tu aprobación."
+                            : "Aún pendiente de entrega."}
+                      </div>
+                    )}
                 </div>
               )}
 
