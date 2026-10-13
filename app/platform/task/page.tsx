@@ -640,8 +640,24 @@ export default async function TaskPage({
   const sp = await searchParams;
   const statusFilter = getSearchParam(sp, "status") ?? "all";
   const priorityFilter = getSearchParam(sp, "priority") ?? "all";
-  const dateFrom = getSearchParam(sp, "date_from");
-  const dateTo = getSearchParam(sp, "date_to");
+  const monthParam = getSearchParam(sp, "month");
+
+  // Convertir el selector de mes (YYYY-MM) a rango de fechas
+  let dateFrom = getSearchParam(sp, "date_from");
+  let dateTo = getSearchParam(sp, "date_to");
+
+  if (monthParam) {
+    const m = /^(\d{4})-(\d{2})$/.exec(monthParam.trim());
+    if (m) {
+      const year = Number(m[1]);
+      const month = Number(m[2]);
+      const from = new Date(Date.UTC(year, month - 1, 1));
+      const to = new Date(Date.UTC(year, month, 0));
+      dateFrom = from.toISOString().slice(0, 10);
+      dateTo = to.toISOString().slice(0, 10);
+    }
+  }
+
   const supervisorFilter = getSearchParam(sp, "supervisor");
   const errorParam = getSearchParam(sp, "error");
   const messageParam = getSearchParam(sp, "message");

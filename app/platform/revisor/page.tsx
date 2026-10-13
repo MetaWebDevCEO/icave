@@ -1,5 +1,6 @@
 import { PlatformShell } from "@/app/platform/platform-shell";
 import { createClient } from "@/utils/supabase/server";
+import { createServiceClient } from "@/utils/supabase/service";
 import { redirect } from "next/navigation";
 import {
   getRoleFromUserRolesTable,
@@ -43,19 +44,6 @@ const ymKey = (d: Date) =>
 const ymdKey = (d: Date) =>
   `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
 
-// Label corto "Sep 26"
-const monthLabel = (ym: string) => {
-  const [y, m] = ym.split("-").map(Number);
-  const d = new Date(Date.UTC(y, m - 1, 1));
-  return d.toLocaleDateString("es-MX", { month: "short", year: "2-digit" });
-};
-
-// Label de día "12"
-const dayLabel = (ymd: string) => {
-  const parts = ymd.split("-").map(Number);
-  return String(parts[2]);
-};
-
 // Detectar si es prioridad urgente (impacto alto)
 const isHighImpact = (p: string | null) => {
   const pl = (p ?? "").trim().toLowerCase();
@@ -66,11 +54,7 @@ const isHighImpact = (p: string | null) => {
   return false;
 };
 
-export default async function RevisorDashboardPage({
-  searchParams,
-}: {
-  searchParams: Promise<{ mes?: string }>;
-}) {
+export default async function RevisorDashboardPage() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
@@ -102,88 +86,15 @@ export default async function RevisorDashboardPage({
   const sections = buildSections(role);
 
   // -------------------------------------------------------------------
-  // Determinar mes seleccionado (default: mes actual)
+  // Siempre mostramos el MES ACTUAL (no hay selector de mes)
   // -------------------------------------------------------------------
-  const sp = await searchParams;
   const today = new Date();
   const currentYm = ymKey(new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 1)));
-  const selectedYm = sp?.mes && /^\d{4}-\d{2}$/.test(sp.mes) ? sp.mes : currentYm;
+  const selectedYm = currentYm;
   const [selYear, selMonth] = selectedYm.split("-").map(Number);
 
-  // Generar lista de meses para el selector (Enero 2026 a Diciembre 2026)
-  const monthOptions: { value: string; label: string }[] = [];
-  for (let m = 1; m <= 12; m++) {
-    const ym = `2026-${String(m).padStart(2, "0")}`;
-    monthOptions.push({ value: ym, label: monthLabel(ym) });
-  }
-
   // -------------------------------------------------------------------
-  // INTENTO 1: Leer desde la tabla agregada monthly_dashboard_stats
-  // (se actualiza automáticamente vía trigger sobre asignaciones).
-  // Si la tabla no existe o no hay fila para el mes, cae al cálculo en JS.
-  // -------------------------------------------------------------------
-  type MonthlyStatRow = {
-    month_key: string;
-    total: number;
-    completadas: number;
-    en_curso: number;
-    pendientes: number;
-    vencidas: number;
-    avance: number;
-    supervisor_compliance: unknown;
-    daily_series: unknown;
-    alto_impacto_total: number;
-    alto_impacto_completadas: number;
-    alto_impacto_pendientes: number;
-    alto_impacto_avance: number;
-    dia_max_actividad: string | null;
-    dia_max_entregas: number;
-  };
-
-  const { data: statRow, error: statErr } = await supabase
-    .from("monthly_dashboard_stats")
-    .select("*")
-    .eq("month_key", selectedYm)
-    .maybeSingle();
-
-  if (!statErr && statRow) {
-    const r = statRow as MonthlyStatRow;
-    const supArr = Array.isArray(r.supervisor_compliance) ? r.supervisor_compliance : [];
-    const dailyArr = Array.isArray(r.daily_series) ? r.daily_series : [];
-    return (
-      <PlatformShell
-        sections={sections}
-        currentUserId={user.id}
-        currentUserEmail={user.email ?? undefined}
-      >
-        <RevisorDashboard
-          kpis={{
-            total: r.total,
-            completadas: r.completadas,
-            enCurso: r.en_curso,
-            pendientes: r.pendientes,
-            vencidas: r.vencidas,
-            avance: r.avance,
-          }}
-          cumplimientoSupervisores={supArr as any}
-          dailySeries={dailyArr as any}
-          impactoAlto={{
-            total: r.alto_impacto_total,
-            completadas: r.alto_impacto_completadas,
-            pendientes: r.alto_impacto_pendientes,
-            avance: r.alto_impacto_avance,
-          }}
-          diaMaxActividad={r.dia_max_actividad || "—"}
-          diaMaxEntregas={r.dia_max_entregas}
-          monthOptions={monthOptions}
-          selectedMonth={selectedYm}
-        />
-      </PlatformShell>
-    );
-  }
-
-  // -------------------------------------------------------------------
-  // Carga de asignaciones (misma consulta que /platform/task para el revisor)
+  // Carga de asignaciones (todas, sin límite de página)
   // -------------------------------------------------------------------
   const selectFieldsBase =
     "id, created_at, status, title, description, due_at, priority, revisor_id, assigned_to_email";
@@ -201,8 +112,13 @@ export default async function RevisorDashboardPage({
 
   let assignmentsData: AssignmentStat[] = [];
 
+  // Usamos el service client para leer TODAS las asignaciones,
+  // sin que RLS limite al revisor logueado. El dashboard del revisor
+  // debe mostrar datos de TODOS los supervisores y asignaciones.
+  const serviceSupabase = createServiceClient();
+
   const fetchAssignments = async (fields: string): Promise<AssignmentStat[]> => {
-    const { data, error } = await supabase
+    const { data, error } = await serviceSupabase
       .from("asignaciones")
       .select(fields)
       .order("created_at", { ascending: false })
@@ -224,25 +140,17 @@ export default async function RevisorDashboardPage({
     }
   }
 
-  const rows: AssignmentStat[] = assignmentsData;
+  const allRows: AssignmentStat[] = assignmentsData;
 
   // -------------------------------------------------------------------
-  // Filtrar por mes seleccionado (igual que supervisores: cualquier fecha
-  // [created_at, due_at, submitted_at] que caiga en el mes cuenta)
+  // Filtrar por mes: cada tarea pertenece al mes en que FUE CREADA
+  // (created_at). Usamos una sola fecha definitoria para que cada
+  // asignación se cuente exactamente una vez y los totales no se inflen.
   // -------------------------------------------------------------------
-  const monthStart = Date.UTC(selYear, selMonth - 1, 1);
-  const monthEnd = Date.UTC(selYear, selMonth, 1); // primer día del sig. mes (exclusivo)
-
-  const fallsInMonth = (r: AssignmentStat): boolean => {
-    const dates = [parseDate(r.created_at), parseDate(r.due_at), parseDate(r.submitted_at)];
-    return dates.some((d) => {
-      if (!d) return false;
-      const t = d.getTime();
-      return t >= monthStart && t < monthEnd;
-    });
-  };
-
-  const monthRows = rows.filter(fallsInMonth);
+  const monthRows = allRows.filter((r) => {
+    const created = parseDate(r.created_at);
+    return created && ymKey(created) === selectedYm;
+  });
 
   // -------------------------------------------------------------------
   // KPIs
@@ -260,19 +168,20 @@ export default async function RevisorDashboardPage({
     return isPendingStatus(s) && !isCompletedStatus(s);
   }).length;
 
-  // Vencidas: asignaciones del mes con due_at anterior al fin del mes y no completadas
+  // Vencidas: asignaciones del mes con due_at anterior a hoy y no completadas
+  const now = new Date();
   const vencidas = monthRows.filter((r) => {
     const s = (r.status ?? "").trim().toLowerCase();
     if (isCompletedStatus(s)) return false;
     const due = parseDate(r.due_at);
-    return due ? due.getTime() < monthEnd : false;
+    return due ? due < now : false;
   }).length;
 
   const avance = total > 0 ? Math.round((completadas / total) * 100) : 0;
 
   // -------------------------------------------------------------------
   // 1. Cumplimiento de Actividades por supervisor (0-100%)
-  //    Usa las asignaciones CREADAS en el mes seleccionado (1 al último día)
+  //    Usa las asignaciones del mes seleccionado
   // -------------------------------------------------------------------
   const supervisorCounts = new Map<string, { total: number; completadas: number }>();
   monthRows.forEach((r) => {
@@ -296,24 +205,24 @@ export default async function RevisorDashboardPage({
     .sort((a, b) => b.avance - a.avance || b.total - a.total);
 
   // -------------------------------------------------------------------
-  // 2. Días de Actividad (mes SELECCIONADO) - creadas vs entregadas por día
+  // 2. Días de Actividad (mes SELECCIONADO) - día 1 al último día del mes
+  //    Muestra creadas (created_at) vs entregadas (submitted_at) por día
   // -------------------------------------------------------------------
-  const yearNow = selYear;
-  const monthNow = selMonth - 1; // meses en JS son 0-indexed
-  const daysInMonth = new Date(Date.UTC(yearNow, monthNow + 1, 0)).getUTCDate();
-
-  const inDay = (iso: string | null, dayStart: number, dayEnd: number) => {
-    const d = parseDate(iso);
-    return d ? d.getTime() >= dayStart && d.getTime() < dayEnd : false;
-  };
+  const lastDay = new Date(Date.UTC(selYear, selMonth, 0)).getUTCDate();
 
   const dailySeries = [];
-  for (let day = 1; day <= daysInMonth; day++) {
-    const dayStart = Date.UTC(yearNow, monthNow, day);
-    const dayEnd = Date.UTC(yearNow, monthNow, day + 1);
+  for (let day = 1; day <= lastDay; day++) {
+    const d = new Date(Date.UTC(selYear, selMonth - 1, day));
+    const key = ymdKey(d);
 
-    const creadas = rows.filter((r) => inDay(r.created_at, dayStart, dayEnd)).length;
-    const entregadas = rows.filter((r) => inDay(r.submitted_at, dayStart, dayEnd)).length;
+    const creadas = monthRows.filter((r) => {
+      const c = parseDate(r.created_at);
+      return c && ymdKey(c) === key;
+    }).length;
+    const entregadas = monthRows.filter((r) => {
+      const s = parseDate(r.submitted_at);
+      return s && ymdKey(s) === key;
+    }).length;
 
     dailySeries.push({
       dia: String(day),
@@ -365,7 +274,6 @@ export default async function RevisorDashboardPage({
         }}
         diaMaxActividad={diaMaxActividad || "—"}
         diaMaxEntregas={maxEntregas}
-        monthOptions={monthOptions}
         selectedMonth={selectedYm}
       />
     </PlatformShell>

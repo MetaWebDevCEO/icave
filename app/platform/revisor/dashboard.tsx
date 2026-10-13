@@ -1,6 +1,5 @@
 "use client";
 
-import { useRouter } from "next/navigation";
 import {
   Bar,
   CartesianGrid,
@@ -54,7 +53,6 @@ type Props = {
   impactoAlto: ImpactoAlto;
   diaMaxActividad: string;
   diaMaxEntregas: number;
-  monthOptions: { value: string; label: string }[];
   selectedMonth: string;
 };
 
@@ -134,8 +132,8 @@ function CumplimientoSupervisores({ data }: { data: SupervisorCumplimiento[] }) 
 // ----- 2. Días de actividad del mes en curso (Combo: barras + línea) -----
 function DailyActivityChart({ data }: { data: DailyPoint[] }) {
   const config = {
-    creadas: { label: "Creadas", color: "#2563eb" },
-    entregadas: { label: "Entregadas", color: "#16a34a" },
+    creadas: { label: "Creadas", color: "#f59e0b" },
+    entregadas: { label: "Entregadas", color: "#7c3aed" },
   } satisfies ChartConfig;
 
   const hasAny = data.some((d) => d.total > 0);
@@ -166,16 +164,16 @@ function DailyActivityChart({ data }: { data: DailyPoint[] }) {
         <ChartTooltip content={<ChartTooltipContent indicator="dashed" />} />
         <Bar
           dataKey="creadas"
-          fill="var(--color-creadas)"
+          fill="rgba(245, 158, 11, 0.35)"
           radius={[6, 6, 0, 0]}
           barSize={14}
         />
         <Line
           type="monotone"
           dataKey="entregadas"
-          stroke="var(--color-entregadas)"
+          stroke="rgba(124, 58, 237, 0.85)"
           strokeWidth={2.5}
-          dot={{ r: 3, fill: "var(--color-entregadas)" }}
+          dot={{ r: 3, fill: "rgba(124, 58, 237, 0.85)" }}
           activeDot={{ r: 5 }}
         />
       </ComposedChart>
@@ -192,7 +190,7 @@ function ImpactoAltoChart({ data }: { data: ImpactoAlto }) {
 
   const config = {
     completadas: { label: "Completadas", color: "#16a34a" },
-    pendientes: { label: "Pendientes", color: "#dc2626" },
+    pendientes: { label: "Pendientes", color: "#f59e0b" },
   } satisfies ChartConfig;
 
   if (data.total === 0) {
@@ -216,22 +214,24 @@ function ImpactoAltoChart({ data }: { data: ImpactoAlto }) {
             {pieData.map((s, i) => (
               <Cell
                 key={s.key}
-                fill={s.key === "completadas" ? "#16a34a" : "#dc2626"}
+                fill={s.key === "completadas" ? "rgba(22, 163, 74, 0.35)" : "rgba(245, 158, 11, 0.35)"}
+                stroke={s.key === "completadas" ? "rgba(22, 163, 74, 0.6)" : "rgba(245, 158, 11, 0.6)"}
+                strokeWidth={1}
               />
             ))}
           </Pie>
         </PieChart>
       </ChartContainer>
       <div className="grid grid-cols-2 gap-3 text-center">
-        <div className="rounded-lg border border-border/60 p-3">
-          <div className="text-2xl font-semibold text-green-600">{data.completadas}</div>
-          <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+        <div className="rounded-lg bg-emerald-50 p-3 ring-1 ring-inset ring-emerald-200 dark:bg-emerald-950/30 dark:ring-emerald-900">
+          <div className="text-2xl font-semibold text-emerald-700 dark:text-emerald-200">{data.completadas}</div>
+          <div className="text-[11px] uppercase tracking-wide text-emerald-700/70 dark:text-emerald-200/70">
             Completadas
           </div>
         </div>
-        <div className="rounded-lg border border-border/60 p-3">
-          <div className="text-2xl font-semibold text-red-600">{data.pendientes}</div>
-          <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+        <div className="rounded-lg bg-amber-50 p-3 ring-1 ring-inset ring-amber-200 dark:bg-amber-950/30 dark:ring-amber-900">
+          <div className="text-2xl font-semibold text-amber-700 dark:text-amber-200">{data.pendientes}</div>
+          <div className="text-[11px] uppercase tracking-wide text-amber-700/70 dark:text-amber-200/70">
             Pendientes
           </div>
         </div>
@@ -333,15 +333,13 @@ export function RevisorDashboard({
   impactoAlto,
   diaMaxActividad,
   diaMaxEntregas,
-  monthOptions,
   selectedMonth,
 }: Props) {
-  const router = useRouter();
-
-  const handleMonthChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const mes = e.target.value;
-    router.replace(`/platform/revisor?mes=${mes}`);
-  };
+  const monthName = (() => {
+    const [y, m] = selectedMonth.split("-").map(Number);
+    const d = new Date(Date.UTC(y, m - 1, 1));
+    return d.toLocaleDateString("es-MX", { month: "long", year: "numeric", timeZone: "UTC" });
+  })();
 
   return (
     <div className="flex flex-col gap-8 p-6">
@@ -350,28 +348,8 @@ export function RevisorDashboard({
         <div className="flex flex-col gap-1">
           <h1 className="text-3xl font-semibold tracking-tight">Dashboard</h1>
           <p className="text-sm text-muted-foreground">
-            Cumplimiento, actividad e impacto de las asignaciones.
+            Cumplimiento, actividad e impacto de las asignaciones · {monthName}
           </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <label
-            htmlFor="mes-select"
-            className="text-xs font-medium uppercase tracking-[0.12em] text-muted-foreground"
-          >
-            Mes
-          </label>
-          <select
-            id="mes-select"
-            value={selectedMonth}
-            onChange={handleMonthChange}
-            className="h-9 rounded-lg border border-zinc-200 bg-white px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-zinc-900 dark:border-zinc-700 dark:bg-zinc-900"
-          >
-            {monthOptions.map((m) => (
-              <option key={m.value} value={m.value}>
-                {m.label}
-              </option>
-            ))}
-          </select>
         </div>
       </div>
 
