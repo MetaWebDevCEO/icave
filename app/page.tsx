@@ -35,8 +35,8 @@ export default async function Home({
       );
     }
 
-    const email = String(formData.get("email") ?? "");
-    const password = String(formData.get("password") ?? "");
+    const email = String(formData.get("email") ?? "").trim().toLowerCase();
+    const password = String(formData.get("password") ?? "").trim();
 
     if (!email || !password) {
       redirect("/?error=Email%20y%20contrase%C3%B1a%20son%20obligatorios");
@@ -46,7 +46,16 @@ export default async function Home({
     const { error } = await supabase.auth.signInWithPassword({ email, password });
 
     if (error) {
-      redirect(`/?error=${encodeURIComponent(error.message)}`);
+      let msg = error.message || "No se pudo iniciar sesión.";
+      const code = (error as any)?.status;
+      if (msg.includes("Invalid login credentials")) {
+        msg = "Correo o contraseña incorrectos. Si el problema persiste, solicita al administrador que restablezca tu contraseña.";
+      } else if (msg.includes("Email not confirmed")) {
+        msg = "Tu correo no ha sido confirmado. Revisa tu bandeja de entrada.";
+      } else if (code === 429) {
+        msg = "Demasiados intentos. Espera un momento e intenta de nuevo.";
+      }
+      redirect(`/?error=${encodeURIComponent(msg)}`);
     }
 
     // Resolver rol y redirigir directamente al dashboard correspondiente
@@ -78,8 +87,8 @@ export default async function Home({
       );
     }
 
-    const email = String(formData.get("email") ?? "");
-    const password = String(formData.get("password") ?? "");
+    const email = String(formData.get("email") ?? "").trim().toLowerCase();
+    const password = String(formData.get("password") ?? "").trim();
 
     if (!email || !password) {
       redirect("/?error=Email%20y%20contrase%C3%B1a%20son%20obligatorios");

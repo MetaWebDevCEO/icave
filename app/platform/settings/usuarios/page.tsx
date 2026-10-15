@@ -520,7 +520,7 @@ export default async function UsuariosPage({
     const targetUserId = String(formData.get("user_id") ?? "");
     const nombre = String(formData.get("nombre") ?? "").trim();
     const correo = String(formData.get("correo") ?? "").trim().toLowerCase();
-    const contrasena = String(formData.get("contrasena") ?? "");
+    const contrasena = String(formData.get("contrasena") ?? "").trim();
     const rawRoleCode = formData.get("role_code");
 
     if (!targetUserId) {
@@ -720,7 +720,7 @@ export default async function UsuariosPage({
 
     const nombre = String(formData.get("nombre") ?? "").trim();
     const correo = String(formData.get("correo") ?? "").trim().toLowerCase();
-    const contrasena = String(formData.get("contrasena") ?? "");
+    const contrasena = String(formData.get("contrasena") ?? "").trim();
     const rawRoleCode = formData.get("role_code");
 
     if (!nombre) {
