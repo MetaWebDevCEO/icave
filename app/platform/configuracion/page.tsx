@@ -14,7 +14,6 @@ import {
   type UserRole,
   resolveRoleForUser,
 } from "@/lib/platform-roles";
-type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 const AVATAR_BUCKET = "avatars";
 const MAX_AVATAR_SIZE_BYTES = 2 * 1024 * 1024;
 const ALLOWED_AVATAR_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
@@ -38,14 +37,6 @@ function redirectOrError(path: string, query?: { error?: string; message?: strin
   if (query?.error) url.searchParams.set("error", query.error);
   if (query?.message) url.searchParams.set("message", query.message);
   return { ok: !query?.error, url: url.pathname + url.search };
-}
-
-function getSearchParam(
-  sp: Record<string, string | string[] | undefined>,
-  key: string
-) {
-  const value = sp[key];
-  return typeof value === "string" ? value : undefined;
 }
 
 function deriveDisplayName(email: string | undefined, metadata: Record<string, unknown>) {
@@ -226,11 +217,7 @@ async function uploadAvatarForUser(
   });
 }
 
-export default async function ConfiguracionPage({
-  searchParams,
-}: {
-  searchParams: SearchParams;
-}) {
+export default async function ConfiguracionPage() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -370,9 +357,6 @@ export default async function ConfiguracionPage({
   }
 
   const sections = buildSections(role);
-  const sp = await searchParams;
-  const errorParam = getSearchParam(sp, "error");
-  const messageParam = getSearchParam(sp, "message");
   const metadata = (user.user_metadata ?? {}) as Record<string, unknown>;
   const displayName = deriveDisplayName(user.email ?? undefined, metadata);
   const roleLabel = role === "revisor" ? "Revisor" : "Supervisor";
@@ -416,18 +400,6 @@ export default async function ConfiguracionPage({
             Actualiza la informacion de tu perfil. Los cambios se reflejan en la vista previa.
           </p>
         </div>
-
-        {errorParam && (
-          <div className="mt-6 border-l-2 border-red-500 pl-4 text-sm text-red-700 dark:text-red-300">
-            {errorParam}
-          </div>
-        )}
-
-        {messageParam && (
-          <div className="mt-6 border-l-2 border-emerald-500 pl-4 text-sm text-emerald-700 dark:text-emerald-300">
-            {messageParam}
-          </div>
-        )}
 
         <div className="mt-10 grid gap-12 xl:grid-cols-[1.45fr_0.95fr]">
           <div className="grid gap-8">

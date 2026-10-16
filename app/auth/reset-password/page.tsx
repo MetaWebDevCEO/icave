@@ -5,17 +5,7 @@ import { redirect } from "next/navigation";
 import { Suspense } from "react";
 import AuthTokenHandler from "./auth-token-handler";
 
-type SearchParams = Promise<Record<string, string | string[] | undefined>>;
-
-export default async function ResetPasswordPage({
-  searchParams,
-}: {
-  searchParams: SearchParams;
-}) {
-  const sp = await searchParams;
-  const errorParam = typeof sp.error === "string" ? sp.error : undefined;
-  const messageParam = typeof sp.message === "string" ? sp.message : undefined;
-
+export default async function ResetPasswordPage() {
   const isSupabaseConfigured = Boolean(
     process.env.NEXT_PUBLIC_SUPABASE_URL &&
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY &&
@@ -148,19 +138,6 @@ export default async function ResetPasswordPage({
                     <div className="mt-1 text-amber-900/80">
                       Completa las variables en <span className="font-medium">.env.local</span>.
                     </div>
-                  </div>
-                )}
-
-                {(errorParam || messageParam) && (
-                  <div
-                    className={[
-                      "mt-6 rounded-[1.35rem] px-5 py-4 text-sm",
-                      errorParam
-                        ? "bg-red-50/92 text-red-900"
-                        : "bg-emerald-50/92 text-emerald-900",
-                    ].join(" ")}
-                  >
-                    {errorParam ?? messageParam}
                   </div>
                 )}
 

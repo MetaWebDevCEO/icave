@@ -1,5 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Geist_Mono } from "next/font/google";
+import { FlashNotifications } from "@/components/flash-notifications";
+import "sileo/styles.css";
 import "./globals.css";
 
 const geistMono = Geist_Mono({
@@ -120,6 +122,7 @@ export default function RootLayout({
           dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
         />
         {children}
+        <FlashNotifications />
       </body>
     </html>
   );

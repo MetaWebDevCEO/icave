@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useRef, useState } from "react";
+import { useFormStatus } from "react-dom";
 import { useRouter } from "next/navigation";
 import { formatCalendarDateShort, parseAsCalendarDate } from "@/lib/calendar-date";
 import {
@@ -11,6 +12,7 @@ import {
 } from "@/lib/submission-files";
 import { FileText as DocumentIcon } from "@/components/ui/icons";
 import { createClient } from "@/utils/supabase/client";
+import { sileo } from "sileo";
 
 const MAX_SUBMISSION_SIZE_BYTES = maxSubmissionSizeBytes();
 const MAX_EVIDENCE_FILES = maxEvidenceFiles();
@@ -142,6 +144,53 @@ function getVisibleDescription(description: string | null | undefined) {
   return cleaned || null;
 }
 
+function SubmitButton({
+  label,
+  pendingLabel,
+}: {
+  label: string;
+  pendingLabel: string;
+}) {
+  const { pending } = useFormStatus();
+
+  return (
+    <button
+      type="submit"
+      disabled={pending}
+      className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-md bg-emerald-600 px-4 text-sm font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-emerald-500 dark:hover:bg-emerald-600"
+    >
+      {pending ? (
+        <>
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            aria-hidden="true"
+            className="h-4 w-4 animate-spin"
+          >
+            <circle
+              cx="12"
+              cy="12"
+              r="10"
+              stroke="currentColor"
+              strokeWidth="3"
+              className="opacity-25"
+            />
+            <path
+              d="M22 12a10 10 0 0 1-10 10"
+              stroke="currentColor"
+              strokeWidth="3"
+              strokeLinecap="round"
+            />
+          </svg>
+          {pendingLabel}
+        </>
+      ) : (
+        label
+      )}
+    </button>
+  );
+}
+
 function hasDeliveryEvidence(t: TaskRow) {
   const files = parseSubmissionFiles(t);
   if (files.length > 0) return true;
@@ -170,10 +219,8 @@ export function TaskBoard({
   onMarkCompleted?: (formData: FormData) => Promise<void>;
 }) {
   const [openId, setOpenId] = useState<string | null>(null);
-  const [submissionSizeError, setSubmissionSizeError] = useState<string | null>(null);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
-  const [uploadProgress, setUploadProgress] = useState<string | null>(null);
-  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [isUploading, setIsUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const router = useRouter();
 
@@ -199,7 +246,6 @@ export function TaskBoard({
   };
 
   const resetModalState = () => {
-    setSubmissionSizeError(null);
     setSelectedFiles([]);
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
@@ -218,9 +264,6 @@ export function TaskBoard({
         const dt = new DataTransfer();
         next.forEach((f) => dt.items.add(f));
         fileInputRef.current.files = dt.files;
-      }
-      if (next.length === 0) {
-        setSubmissionSizeError(null);
       }
       return next;
     });
@@ -404,12 +447,10 @@ export function TaskBoard({
                           name="assignment_id"
                           value={selected.id}
                         />
-                        <button
-                          type="submit"
-                          className="inline-flex h-10 w-full items-center justify-center rounded-md bg-emerald-600 px-4 text-sm font-medium text-white hover:bg-emerald-700 dark:bg-emerald-500 dark:hover:bg-emerald-600"
-                        >
-                          Marcar como completada
-                        </button>
+                        <SubmitButton
+                          label="Marcar como completada"
+                          pendingLabel="Aprobando…"
+                        />
                       </form>
                     ) : (
                       <div className="mt-1.5 text-sm text-zinc-700 dark:text-zinc-300">
@@ -566,8 +607,34 @@ export function TaskBoard({
                         className="grid gap-3"
                         onSubmit={async (e) => {
                           e.preventDefault();
-                          if (uploadProgress || selectedFiles.length === 0) return;
-                          setUploadError(null);
+                          if (isUploading || selectedFiles.length === 0) return;
+                          setIsUploading(true);
+
+                          let toastId: string | null = null;
+                          const updateProgress = (description: string) => {
+                            if (toastId) sileo.dismiss(toastId);
+                            toastId = sileo.show({
+                              type: "loading",
+                              title: "Subiendo evidencias",
+                              description,
+                              duration: null,
+                            });
+                          };
+                          updateProgress(
+                            `Preparando ${selectedFiles.length} archivo${selectedFiles.length === 1 ? "" : "s"}…`
+                          );
+
+                          const finishSuccess = () => {
+                            if (toastId) sileo.dismiss(toastId);
+                            sileo.success({
+                              title: "Entrega enviada",
+                              description: "Tu evidencia se registró correctamente.",
+                            });
+                            setSelectedFiles([]);
+                            setIsUploading(false);
+                            setOpenId(null);
+                            router.refresh();
+                          };
 
                           try {
                             const supabase = createClient();
@@ -577,7 +644,9 @@ export function TaskBoard({
 
                             for (let i = 0; i < selectedFiles.length; i++) {
                               const file = selectedFiles[i];
-                              setUploadProgress(`Subiendo ${i + 1}/${selectedFiles.length}: ${file.name}`);
+                              updateProgress(
+                                `Subiendo ${i + 1}/${selectedFiles.length}: ${file.name}`
+                              );
 
                               const rawName = file.name || "evidencia.pdf";
                               const dot = rawName.lastIndexOf(".");
@@ -597,16 +666,13 @@ export function TaskBoard({
                               uploadedPaths.push(objectPath);
                             }
 
-                            setUploadProgress("Procesando entrega...");
+                            updateProgress("Procesando entrega…");
                             const fd = new FormData();
                             fd.set("assignment_id", selected.id);
                             fd.set("uploaded_paths", JSON.stringify(uploadedPaths));
                             await onSubmit(fd);
                             // Éxito: limpiar estado, cerrar modal y refrescar
-                            setSelectedFiles([]);
-                            setUploadProgress(null);
-                            setOpenId(null);
-                            router.refresh();
+                            finishSuccess();
                           } catch (err) {
                             // Next.js redirect lanza un error especial; no lo tratamos
                             // como error de subida si es un redirect exitoso.
@@ -615,15 +681,13 @@ export function TaskBoard({
                               (err.message.includes("NEXT_REDIRECT") ||
                                 (err as { digest?: string }).digest?.startsWith("NEXT_REDIRECT"));
                             if (isRedirect) {
-                              setSelectedFiles([]);
-                              setUploadProgress(null);
-                              setOpenId(null);
-                              router.refresh();
+                              finishSuccess();
                               return;
                             }
                             const msg = err instanceof Error ? err.message : "Error al subir archivos.";
-                            setUploadError(msg);
-                            setUploadProgress(null);
+                            if (toastId) sileo.dismiss(toastId);
+                            sileo.error({ title: "Error al subir", description: msg });
+                            setIsUploading(false);
                           }
                         }}
                       >
@@ -649,9 +713,10 @@ export function TaskBoard({
                                 const remaining = MAX_EVIDENCE_FILES - deliveryFiles.length;
                                 if (files.length > remaining) {
                                   setSelectedFiles([]);
-                                  setSubmissionSizeError(
-                                    `Solo puedes subir ${remaining} archivo${remaining === 1 ? "" : "s"} más (ya tienes ${deliveryFiles.length} de ${MAX_EVIDENCE_FILES}).`
-                                  );
+                                  sileo.error({
+                                    title: "Demasiados archivos",
+                                    description: `Solo puedes subir ${remaining} archivo${remaining === 1 ? "" : "s"} más (ya tienes ${deliveryFiles.length} de ${MAX_EVIDENCE_FILES}).`,
+                                  });
                                   return;
                                 }
                                 const tooBig = files.find(
@@ -659,9 +724,10 @@ export function TaskBoard({
                                 );
                                 if (tooBig) {
                                   setSelectedFiles([]);
-                                  setSubmissionSizeError(
-                                    `El archivo ${tooBig.name} supera los 10 MB. Reduce su tamaño.`
-                                  );
+                                  sileo.error({
+                                    title: "Archivo demasiado grande",
+                                    description: `El archivo ${tooBig.name} supera los 10 MB. Reduce su tamaño.`,
+                                  });
                                   return;
                                 }
                                 const badMime = files.find((f) => {
@@ -675,13 +741,13 @@ export function TaskBoard({
                                 });
                                 if (badMime) {
                                   setSelectedFiles([]);
-                                  setSubmissionSizeError(
-                                    `El archivo "${badMime.name}" no es un PDF. Selecciona solo archivos .pdf.`
-                                  );
+                                  sileo.error({
+                                    title: "Formato no válido",
+                                    description: `El archivo "${badMime.name}" no es un PDF. Selecciona solo archivos .pdf.`,
+                                  });
                                   return;
                                 }
                                 setSelectedFiles(files);
-                                setSubmissionSizeError(null);
                               }}
                               className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
                             />
@@ -694,12 +760,6 @@ export function TaskBoard({
                               máximo cada uno
                             </p>
                           </label>
-
-                          {submissionSizeError && (
-                            <p className="mt-2 rounded-xl bg-red-50 px-3 py-2 text-xs font-semibold text-red-800 ring-1 ring-inset ring-red-100 dark:bg-red-950/30 dark:text-red-200 dark:ring-red-900/40">
-                              {submissionSizeError}
-                            </p>
-                          )}
 
                           {selectedFiles.length > 0 && (
                             <ul className="mt-2 grid gap-2">
@@ -732,29 +792,17 @@ export function TaskBoard({
                           )}
                         </div>
 
-                        {uploadProgress && (
-                          <p className="rounded-xl bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-800 ring-1 ring-inset ring-blue-100 dark:bg-blue-950/30 dark:text-blue-200 dark:ring-blue-900/40">
-                            {uploadProgress}
-                          </p>
-                        )}
-
-                        {uploadError && (
-                          <p className="rounded-xl bg-red-50 px-3 py-2 text-xs font-semibold text-red-800 ring-1 ring-inset ring-red-100 dark:bg-red-950/30 dark:text-red-200 dark:ring-red-900/40">
-                            {uploadError}
-                          </p>
-                        )}
-
                         <button
                           type="submit"
-                          disabled={Boolean(submissionSizeError) || selectedFiles.length === 0 || Boolean(uploadProgress)}
+                          disabled={selectedFiles.length === 0 || isUploading}
                           className={[
                             "inline-flex h-11 w-full items-center justify-center rounded-xl px-4 text-sm font-semibold text-white shadow-sm transition-colors",
-                            submissionSizeError || selectedFiles.length === 0 || uploadProgress
+                            selectedFiles.length === 0 || isUploading
                               ? "cursor-not-allowed bg-zinc-400 hover:bg-zinc-400 dark:bg-zinc-700 dark:hover:bg-zinc-700"
                               : "bg-zinc-950 hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-950 dark:hover:bg-white",
                           ].join(" ")}
                         >
-                          {uploadProgress
+                          {isUploading
                             ? "Subiendo..."
                             : selectedHasDelivery || isCompleted(selected.status)
                               ? "Actualizar entrega"

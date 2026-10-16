@@ -130,3 +130,8 @@
     @apply font-sans;
   }
 }
+
+/* Notificaciones (sileo) visibles por encima de modales y popovers */
+[data-sileo-viewport] {
+  z-index: 999999;
+}

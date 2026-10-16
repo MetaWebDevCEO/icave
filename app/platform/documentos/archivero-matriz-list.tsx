@@ -15,6 +15,7 @@ import {
   type UpdateAssignmentBasicsResult,
 } from "@/app/platform/revisor/asignacion/actions";
 import { setMatrizSupervisor } from "./matriz-supervisor-actions";
+import { sileo } from "sileo";
 
 export type FilaMatriz = {
   id: string;
@@ -154,7 +155,7 @@ export function ArchiveroMatrizList(props: Props) {
    * - Optimista cuando el usuario elige/quita un supervisor.
    * - Se persiste en background via `setMatrizSupervisor`.
    * - Si falla la persistencia, se hace REVERT al valor anterior y se
-   *   muestra feedback inline de error.
+   *   notifica el error con un toast.
    * Esta asociación NUNCA se modifica por crear la asignación (Check).
    * Solo cambia cuando el usuario pulsa "Cambiar" o "Quitar" en el chip.
    */
@@ -164,14 +165,8 @@ export function ArchiveroMatrizList(props: Props) {
   const [savingSupervisors, setSavingSupervisors] = React.useState<
     Set<number>
   >(new Set());
-  const [supervisorError, setSupervisorError] = React.useState<
-    Map<number, string>
-  >(new Map());
 
   const [creatingIds, setCreatingIds] = React.useState<Set<number>>(new Set());
-  const [feedbackPorFila, setFeedbackPorFila] = React.useState<
-    Map<number, { ok: boolean; msg: string }>
-  >(new Map());
 
   /**
    * Cada vez que una fila materializa la asignación via Check, guardamos
@@ -230,16 +225,10 @@ export function ArchiveroMatrizList(props: Props) {
   const [editarTitulo, setEditarTitulo] = React.useState<string>("");
   const [editarFecha, setEditarFecha] = React.useState<string>("");
   const [editarSubmitting, setEditarSubmitting] = React.useState<boolean>(false);
-  const [editarResult, setEditarResult] = React.useState<
-    { ok: true } | { ok: false; error: string } | null
-  >(null);
 
   // ---- Formulario PRE-CONFIGURAR FILA (antes de crear asignación) ----
   const [preTitulo, setPreTitulo] = React.useState<string>("");
   const [preFecha, setPreFecha] = React.useState<string>("");
-  const [preResult, setPreResult] = React.useState<
-    { ok: true } | { ok: false; error: string } | null
-  >(null);
 
   // Cuando se abre el dialog de cualquiera de los 2 formularios, inicializar inputs.
   React.useEffect(() => {
@@ -247,14 +236,12 @@ export function ArchiveroMatrizList(props: Props) {
     if (dialog.kind === "editarAsignacion") {
       setEditarTitulo(dialog.initialTitle);
       setEditarFecha(dialog.initialDueAtISO.slice(0, 10));
-      setEditarResult(null);
       setEditarSubmitting(false);
       return;
     }
     if (dialog.kind === "preconfigurarFila") {
       setPreTitulo(dialog.initialTitle);
       setPreFecha(dialog.initialFechaISO.slice(0, 10));
-      setPreResult(null);
       return;
     }
   }, [dialog]);
@@ -266,16 +253,21 @@ export function ArchiveroMatrizList(props: Props) {
 
     const t = editarTitulo.trim();
     if (!t.length) {
-      setEditarResult({ ok: false, error: "El nombre no puede quedar vacío." });
+      sileo.error({
+        title: "Nombre requerido",
+        description: "El nombre no puede quedar vacío.",
+      });
       return;
     }
     if (!editarFecha) {
-      setEditarResult({ ok: false, error: "Selecciona fecha de entrega." });
+      sileo.error({
+        title: "Fecha requerida",
+        description: "Selecciona fecha de entrega.",
+      });
       return;
     }
 
     setEditarSubmitting(true);
-    setEditarResult(null);
 
     try {
       const r: UpdateAssignmentBasicsResult = await updateAssignmentBasics({
@@ -295,28 +287,22 @@ export function ArchiveroMatrizList(props: Props) {
           });
           return n;
         });
-        setFeedbackPorFila((prev) => {
-          const n = new Map(prev);
-          n.set(dialog.displayId, { ok: true, msg: "Cambios guardados." });
-          return n;
+        sileo.success({
+          title: "Cambios guardados",
+          description: "La asignación se actualizó correctamente.",
         });
-        setTimeout(() => {
-          setFeedbackPorFila((prev) => {
-            const n = new Map(prev);
-            const fb = n.get(dialog.displayId);
-            if (fb && fb.msg === "Cambios guardados.") n.delete(dialog.displayId);
-            return n;
-          });
-        }, 3500);
-        setEditarResult({ ok: true });
-        setTimeout(() => setDialog(null), 650);
+        setDialog(null);
       } else {
-        setEditarResult({ ok: false, error: r.error });
+        sileo.error({
+          title: "No se pudieron guardar los cambios",
+          description: r.error,
+        });
       }
     } catch (err) {
-      setEditarResult({
-        ok: false,
-        error: err instanceof Error ? err.message : "Error desconocido al guardar.",
+      sileo.error({
+        title: "Error al guardar",
+        description:
+          err instanceof Error ? err.message : "Error desconocido al guardar.",
       });
     } finally {
       setEditarSubmitting(false);
@@ -329,11 +315,17 @@ export function ArchiveroMatrizList(props: Props) {
 
     const t = preTitulo.trim();
     if (!t.length) {
-      setPreResult({ ok: false, error: "El nombre no puede quedar vacío." });
+      sileo.error({
+        title: "Nombre requerido",
+        description: "El nombre no puede quedar vacío.",
+      });
       return;
     }
     if (!preFecha) {
-      setPreResult({ ok: false, error: "Selecciona fecha de entrega." });
+      sileo.error({
+        title: "Fecha requerida",
+        description: "Selecciona fecha de entrega.",
+      });
       return;
     }
 
@@ -346,30 +338,11 @@ export function ArchiveroMatrizList(props: Props) {
       return n;
     });
 
-    setFeedbackPorFila((prev) => {
-      const n = new Map(prev);
-      n.set(dialog.displayId, {
-        ok: true,
-        msg: "Pre-configurado. Se usará al crear la asignación.",
-      });
-      return n;
+    sileo.success({
+      title: "Fila pre-configurada",
+      description: "Se usará al crear la asignación.",
     });
-    setTimeout(() => {
-      setFeedbackPorFila((prev) => {
-        const n = new Map(prev);
-        const fb = n.get(dialog.displayId);
-        if (
-          fb &&
-          fb.msg === "Pre-configurado. Se usará al crear la asignación."
-        ) {
-          n.delete(dialog.displayId);
-        }
-        return n;
-      });
-    }, 3500);
-
-    setPreResult({ ok: true });
-    setTimeout(() => setDialog(null), 550);
+    setDialog(null);
   }
 
   const definidasIds = React.useMemo(
@@ -441,8 +414,8 @@ export function ArchiveroMatrizList(props: Props) {
    * forma optimista, y si falla la persistencia, revierte al estado previo
    * (para garantizar que UI === DB en todo momento).
    * Además, si falla, LANZA excepción al final para que el Modal (en
-   * QuickAsignarFila, modo selección) también se entere y muestre banner
-   * rojo con el detalle. Sin esto, el Modal pensaba que todo era OK y
+   * QuickAsignarFila, modo selección) también se entere y notifique el
+   * detalle con un toast. Sin esto, el Modal pensaba que todo era OK y
    * mostraba "Supervisor asignado correctamente" aun cuando no.
    */
   async function persistirSupervisor(
@@ -457,11 +430,6 @@ export function ArchiveroMatrizList(props: Props) {
       const n = new Map(prev);
       if (nuevo) n.set(displayId, nuevo);
       else n.delete(displayId);
-      return n;
-    });
-    setSupervisorError((prev) => {
-      const n = new Map(prev);
-      n.delete(displayId);
       return n;
     });
     setSavingSupervisors((prev) => new Set(prev).add(displayId));
@@ -496,10 +464,9 @@ export function ArchiveroMatrizList(props: Props) {
         else n.delete(displayId);
         return n;
       });
-      setSupervisorError((prev) => {
-        const n = new Map(prev);
-        n.set(displayId, lastError!);
-        return n;
+      sileo.error({
+        title: "No se pudo guardar el supervisor",
+        description: lastError,
       });
     } finally {
       setSavingSupervisors((prev) => {
@@ -516,8 +483,7 @@ export function ArchiveroMatrizList(props: Props) {
 
   /**
    * Versión async (esperada por QuickAsignarFila en modo selección).
-   * Permite al modal esperar la persistencia real y mostrar
-   * banner verde / rojo según el resultado de la BD antes de cerrarse.
+   * Permite al modal esperar la persistencia real antes de cerrarse.
    * También hace el optimistic update local por si hay re-renders.
    */
   async function onSupervisorSelected(p: {
@@ -562,11 +528,6 @@ export function ArchiveroMatrizList(props: Props) {
 
     try {
       setCreatingIds((prev) => new Set(prev).add(displayId));
-      setFeedbackPorFila((prev) => {
-        const n = new Map(prev);
-        n.delete(displayId);
-        return n;
-      });
 
       const r: CreateAssignmentResult = await createAssignment({
         actividadTitulo: titulo,
@@ -581,14 +542,6 @@ export function ArchiveroMatrizList(props: Props) {
         attachmentFiles: [],
       });
 
-      setFeedbackPorFila((prev) => {
-        const n = new Map(prev);
-        n.set(displayId, {
-          ok: r.ok,
-          msg: r.ok ? "Asignación creada." : r.error,
-        });
-        return n;
-      });
       if (r.ok) {
         setAsignacionesCreadas((prev) => {
           const n = new Map(prev);
@@ -599,22 +552,20 @@ export function ArchiveroMatrizList(props: Props) {
           });
           return n;
         });
-        setTimeout(() => {
-          setFeedbackPorFila((prev) => {
-            const n = new Map(prev);
-            n.delete(displayId);
-            return n;
-          });
-        }, 4000);
+        sileo.success({
+          title: "Asignación creada",
+          description: `Fila #${displayId} · ${titulo}`,
+        });
+      } else {
+        sileo.error({
+          title: "No se pudo crear la asignación",
+          description: r.error,
+        });
       }
     } catch (err) {
-      setFeedbackPorFila((prev) => {
-        const n = new Map(prev);
-        n.set(displayId, {
-          ok: false,
-          msg: err instanceof Error ? err.message : "Error desconocido.",
-        });
-        return n;
+      sileo.error({
+        title: "Error al crear la asignación",
+        description: err instanceof Error ? err.message : "Error desconocido.",
       });
     } finally {
       setCreatingIds((prev) => {
@@ -810,9 +761,7 @@ export function ArchiveroMatrizList(props: Props) {
               const isChecked = checked.has(r.displayId);
               const sup = supervisorDeFila(r.displayId);
               const creando = creatingIds.has(r.displayId);
-              const fb = feedbackPorFila.get(r.displayId) ?? null;
               const supSaving = savingSupervisors.has(r.displayId);
-              const supErr = supervisorError.get(r.displayId) ?? null;
 
               return (
                 <div
@@ -855,19 +804,6 @@ export function ArchiveroMatrizList(props: Props) {
                         {r.frecuencia}
                       </span>
                     ) : null}
-                    {fb ? (
-                      <span
-                        className={
-                          "ml-2 inline-flex items-center rounded-md px-2 py-0.5 text-[10px] font-medium " +
-                          (fb.ok
-                            ? "border border-emerald-200 bg-emerald-50 text-emerald-700"
-                            : "border border-red-200 bg-red-50 text-red-700")
-                        }
-                      >
-                        {fb.ok ? "✓ " : "⚠ "}
-                        {fb.msg}
-                      </span>
-                    ) : null}
                   </div>
 
                   <div className="col-span-2">
@@ -877,17 +813,9 @@ export function ArchiveroMatrizList(props: Props) {
                         onClick={() => abrirSeleccionarSupervisor(r.displayId)}
                         className={
                           "group flex w-full items-center gap-2 rounded-md border px-2 py-1.5 text-left text-[11px] transition-colors " +
-                          (supErr
-                            ? "border-red-400 bg-red-50 text-red-700 hover:bg-red-100 dark:border-red-700 dark:bg-red-950 dark:text-red-200"
-                            : "border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-100 dark:border-zinc-800 dark:bg-black dark:text-zinc-300 dark:hover:bg-zinc-900")
+                          "border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-100 dark:border-zinc-800 dark:bg-black dark:text-zinc-300 dark:hover:bg-zinc-900"
                         }
-                        title={
-                          supErr
-                            ? "Error al guardar supervisor persistente: " +
-                              supErr +
-                              " · Click para reintentar (Cambiar supervisor)"
-                            : `Cambiar supervisor asignado (actual: ${sup.displayName}) — se mantiene aunque cambies de mes, recargues o cierres sesión`
-                        }
+                        title={`Cambiar supervisor asignado (actual: ${sup.displayName}) — se mantiene aunque cambies de mes, recargues o cierres sesión`}
                       >
                         {supSaving ? (
                           <svg
@@ -930,21 +858,9 @@ export function ArchiveroMatrizList(props: Props) {
                           </span>
                         )}
                         <span className="min-w-0 flex-1 truncate">
-                          <span
-                            className={
-                              "font-medium " +
-                              (supErr
-                                ? "text-red-700 dark:text-red-200"
-                                : "text-zinc-800 dark:text-zinc-200")
-                            }
-                          >
+                          <span className="font-medium text-zinc-800 dark:text-zinc-200">
                             {sup.displayName}
                           </span>
-                          {supErr ? (
-                            <span className="block truncate text-[10px] text-red-600 dark:text-red-300">
-                              {supErr}
-                            </span>
-                          ) : null}
                         </span>
                         <span className="ml-1 flex items-center gap-1 opacity-0 group-hover:opacity-100">
                           <span
@@ -991,15 +907,9 @@ export function ArchiveroMatrizList(props: Props) {
                         onClick={() => abrirSeleccionarSupervisor(r.displayId)}
                         className={
                           "inline-flex h-8 w-full items-center justify-center gap-1 rounded-md border-dashed bg-white text-[11px] font-medium transition-colors " +
-                          (supErr
-                            ? "border border-red-400 text-red-600 hover:bg-red-50 dark:border-red-700 dark:text-red-300 dark:hover:bg-red-950"
-                            : "border border-zinc-300 text-zinc-500 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-900")
+                          "border border-zinc-300 text-zinc-500 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-900"
                         }
-                        title={
-                          supErr
-                            ? "Error al guardar. Click para reintentar seleccionando supervisor."
-                            : "Seleccionar supervisor para esta actividad — quedará asignado permanentemente hasta que tú lo cambies"
-                        }
+                        title="Seleccionar supervisor para esta actividad — quedará asignado permanentemente hasta que tú lo cambies"
                       >
                         {supSaving ? (
                           <svg
@@ -1025,7 +935,7 @@ export function ArchiveroMatrizList(props: Props) {
                           <SupervisorAsignarIcon />
                         )}
                         <span className="hidden md:inline">
-                          {supErr ? "Reintentar" : supSaving ? "Guardando…" : "Asignar"}
+                          {supSaving ? "Guardando…" : "Asignar"}
                         </span>
                       </button>
                     )}
@@ -1038,13 +948,9 @@ export function ArchiveroMatrizList(props: Props) {
                       disabled={creando}
                       className={
                         "inline-flex h-8 items-center justify-center gap-1 rounded-md border px-2 text-xs font-medium transition-colors " +
-                        (fb?.ok
-                          ? "border-emerald-500 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 dark:border-emerald-700 dark:bg-emerald-950 dark:text-emerald-200 dark:hover:bg-emerald-900"
-                          : fb && !fb.ok
-                            ? "border-red-500 bg-red-50 text-red-700 hover:bg-red-100 dark:border-red-700 dark:bg-red-950 dark:text-red-200 dark:hover:bg-red-900"
-                            : sup
-                              ? "border-emerald-600 bg-white text-emerald-700 hover:bg-emerald-50 dark:border-emerald-600 dark:bg-black dark:text-emerald-400 dark:hover:bg-zinc-900"
-                              : "border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-100 dark:border-zinc-800 dark:bg-black dark:text-zinc-300 dark:hover:bg-zinc-900")
+                        (sup
+                          ? "border-emerald-600 bg-white text-emerald-700 hover:bg-emerald-50 dark:border-emerald-600 dark:bg-black dark:text-emerald-400 dark:hover:bg-zinc-900"
+                          : "border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-100 dark:border-zinc-800 dark:bg-black dark:text-zinc-300 dark:hover:bg-zinc-900")
                       }
                       title={
                         creando
@@ -1074,21 +980,6 @@ export function ArchiveroMatrizList(props: Props) {
                             d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
                           />
                         </svg>
-                      ) : fb?.ok ? (
-                        <svg
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          className="h-3.5 w-3.5"
-                          aria-hidden="true"
-                        >
-                          <path
-                            d="M5 12l5 5L20 7"
-                            stroke="currentColor"
-                            strokeWidth="2.4"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                          />
-                        </svg>
                       ) : (
                         <svg
                           viewBox="0 0 24 24"
@@ -1106,13 +997,7 @@ export function ArchiveroMatrizList(props: Props) {
                         </svg>
                       )}
                       <span className="hidden md:inline">
-                        {creando
-                          ? "Creando…"
-                          : fb?.ok
-                            ? "Creada"
-                            : fb && !fb.ok
-                              ? "Reintentar"
-                              : "Crear"}
+                        {creando ? "Creando…" : "Crear"}
                       </span>
                     </button>
 
@@ -1271,16 +1156,6 @@ export function ArchiveroMatrizList(props: Props) {
                   className="block w-full rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-900 outline-none placeholder:text-zinc-400 focus:border-zinc-400 focus:ring-1 focus:ring-zinc-300 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-100 dark:placeholder:text-zinc-600 dark:focus:border-zinc-600"
                 />
               </div>
-
-              {editarResult?.ok ? (
-                <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-800 dark:border-emerald-900/60 dark:bg-emerald-950/40 dark:text-emerald-300">
-                  Cambios guardados correctamente.
-                </div>
-              ) : editarResult ? (
-                <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs font-medium text-red-800 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-300">
-                  {editarResult.error}
-                </div>
-              ) : null}
             </div>
 
             <div className="flex items-center justify-end gap-2 border-t border-zinc-100 px-5 py-3 dark:border-zinc-900">
@@ -1380,16 +1255,6 @@ export function ArchiveroMatrizList(props: Props) {
                   className="block w-full rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-900 outline-none placeholder:text-zinc-400 focus:border-zinc-400 focus:ring-1 focus:ring-zinc-300 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-100 dark:placeholder:text-zinc-600 dark:focus:border-zinc-600"
                 />
               </div>
-
-              {preResult?.ok ? (
-                <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-800 dark:border-emerald-900/60 dark:bg-emerald-950/40 dark:text-emerald-300">
-                  Listo. Los valores se usarán al crear la asignación.
-                </div>
-              ) : preResult ? (
-                <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs font-medium text-red-800 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-300">
-                  {preResult.error}
-                </div>
-              ) : null}
             </div>
 
             <div className="flex items-center justify-end gap-2 border-t border-zinc-100 px-5 py-3 dark:border-zinc-900">

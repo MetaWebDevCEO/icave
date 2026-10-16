@@ -18,8 +18,6 @@ type Props = {
   supervisorFilter?: string;
   userOptions?: { value: string; label: string }[];
   error: PostgrestError | null;
-  errorParam?: string;
-  messageParam?: string;
   assignments: TaskRowWithRevisor[];
   basePath: string;
   onSubmit: (formData: FormData) => Promise<void>;
@@ -42,8 +40,6 @@ export function TaskPageContent({
   supervisorFilter,
   userOptions = [],
   error,
-  errorParam,
-  messageParam,
   assignments,
   basePath,
   onSubmit,
@@ -159,19 +155,6 @@ export function TaskPageContent({
             </a>
           </form>
         </div>
-
-        {(errorParam || messageParam) && (
-          <div
-            className={[
-              "mt-4 rounded-lg border p-4 text-sm",
-              errorParam
-                ? "border-red-200 bg-red-50 text-red-900 dark:border-red-900/40 dark:bg-red-950/40 dark:text-red-100"
-                : "border-zinc-200 bg-zinc-50 text-zinc-900 dark:border-zinc-800 dark:bg-zinc-900/30 dark:text-zinc-100",
-            ].join(" ")}
-          >
-            {errorParam ?? messageParam}
-          </div>
-        )}
 
         <div className="mt-4 rounded-lg border border-zinc-200 bg-white px-5 py-4 dark:border-zinc-800 dark:bg-zinc-950">
           <div className="text-sm font-medium text-zinc-950 dark:text-zinc-50">

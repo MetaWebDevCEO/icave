@@ -14,7 +14,6 @@ export default function AuthTokenHandler({
   const router = useRouter();
   const searchParams = useSearchParams();
   const [ready, setReady] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -32,7 +31,11 @@ export default function AuthTokenHandler({
         });
         if (!cancelled) {
           if (error) {
-            setError(error.message);
+            const msg = encodeURIComponent(
+              error.message ||
+                "El enlace de recuperación expiró o no es válido. Solicita uno nuevo."
+            );
+            router.replace(`/auth/forgot-password?error=${msg}`);
           } else {
             setReady(true);
             router.replace("/auth/reset-password");
@@ -62,14 +65,6 @@ export default function AuthTokenHandler({
       cancelled = true;
     };
   }, [searchParams, router]);
-
-  if (error) {
-    return (
-      <div className="mt-6 rounded-[1.35rem] bg-red-50/92 px-5 py-4 text-sm text-red-900">
-        {error}
-      </div>
-    );
-  }
 
   if (!ready) {
     return <>{fallback}</>;

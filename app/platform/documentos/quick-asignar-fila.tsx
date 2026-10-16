@@ -1,7 +1,8 @@
 "use client";
 
 import * as React from "react";
-import { createAssignment, type CreateAssignmentResult } from "@/app/platform/revisor/asignacion/actions";
+import { createAssignment } from "@/app/platform/revisor/asignacion/actions";
+import { sileo } from "sileo";
 
 export type MatrizOption = { id: number; actividad: string };
 export type SupervisorOption = {
@@ -156,15 +157,10 @@ export function QuickAsignarFila(props: QuickAsignarFilaProps) {
   const [prioridad, setPrioridad] = React.useState<"alto" | "medio" | "bajo">("medio");
   const [descripcion, setDescripcion] = React.useState<string>("");
   const [submitting, setSubmitting] = React.useState<boolean>(false);
-  const [result, setResult] = React.useState<CreateAssignmentResult | { ok: true; id: "" } | null>(
-    null
-  );
 
   // Progress for multiples
   const [progressCurrent, setProgressCurrent] = React.useState<number>(0);
   const [progressTotal, setProgressTotal] = React.useState<number>(0);
-  const [multiIds, setMultiIds] = React.useState<string[]>([]);
-  const [multiErrors, setMultiErrors] = React.useState<string[]>([]);
 
   // Estado SÓLO para modo "nueva"
   const [tituloLibre, setTituloLibre] = React.useState<string>("");
@@ -174,11 +170,8 @@ export function QuickAsignarFila(props: QuickAsignarFilaProps) {
       setSupervisorEmail("");
       setPrioridad("medio");
       setDescripcion("");
-      setResult(null);
       setProgressCurrent(0);
       setProgressTotal(0);
-      setMultiIds([]);
-      setMultiErrors([]);
       setTituloLibre("");
       const def = ultimoDiaMesEnCurso();
       setFechaEntrega(def.toISOString().slice(0, 10));
@@ -241,14 +234,14 @@ export function QuickAsignarFila(props: QuickAsignarFilaProps) {
     e.preventDefault();
     if (isMulti) {
       if (mode.actividades.length === 0) {
-        setResult({ ok: false, error: "No hay actividades seleccionadas." });
+        sileo.error({ title: "Sin actividades", description: "No hay actividades seleccionadas." });
         return;
       }
     } else if (!isSelectionOnly) {
       if (actividadTituloFinal.length === 0) {
-        setResult({
-          ok: false,
-          error: isNueva
+        sileo.error({
+          title: "Falta el título",
+          description: isNueva
             ? "Escribe un título para la asignación."
             : "Actividad no válida en la matriz.",
         });
@@ -256,17 +249,17 @@ export function QuickAsignarFila(props: QuickAsignarFilaProps) {
       }
     }
     if (!supervisorSeleccionado?.email) {
-      setResult({ ok: false, error: "Selecciona un supervisor." });
+      sileo.error({ title: "Falta el supervisor", description: "Selecciona un supervisor." });
       return;
     }
     if (!fechaEntrega && !isSelectionOnly) {
-      setResult({ ok: false, error: "Selecciona fecha límite." });
+      sileo.error({ title: "Falta la fecha límite", description: "Selecciona fecha límite." });
       return;
     }
 
     // Modo selección: retiene la elección SIN crear asignación, pero espera
-    // a que el wrapper persista en BD antes de cerrar, para mostrar feedback
-    // claro de "Guardado OK / Falló" y no dejar al usuario sin saber.
+    // a que el wrapper persista en BD antes de cerrar, para confirmar el
+    // "Guardado OK / Falló" y no dejar al usuario sin saber.
     if (isSelectionOnly && selectionDisplayId != null) {
       const payload = {
         displayId: selectionDisplayId,
@@ -274,17 +267,16 @@ export function QuickAsignarFila(props: QuickAsignarFilaProps) {
       };
       try {
         setSubmitting(true);
-        setResult(null);
         await Promise.resolve(props.onSupervisorSelected?.(payload));
-        setResult({ ok: true, id: "" });
-        // Esperamos 600ms para que el usuario vea el banner "Guardado correctamente".
-        setTimeout(() => {
-          onClose();
-        }, 650);
+        sileo.success({
+          title: "Supervisor asignado",
+          description: "Quedará guardado de forma permanente.",
+        });
+        onClose();
       } catch (err) {
-        setResult({
-          ok: false,
-          error:
+        sileo.error({
+          title: "No se pudo guardar",
+          description:
             err instanceof Error
               ? err.message
               : "Error desconocido al guardar la asignación del supervisor.",
@@ -297,9 +289,6 @@ export function QuickAsignarFila(props: QuickAsignarFilaProps) {
 
     try {
       setSubmitting(true);
-      setResult(null);
-      setMultiIds([]);
-      setMultiErrors([]);
 
       const fechaISO = toISOAtMidnight(new Date(fechaEntrega + "T00:00:00Z"));
       const basePayload = {
@@ -339,19 +328,26 @@ export function QuickAsignarFila(props: QuickAsignarFilaProps) {
           }
         }
         setProgressCurrent(items.length);
-        setMultiIds(ids);
-        setMultiErrors(errors);
+
+        const detalleErrores = errors.slice(0, 3).join(" · ");
         if (ids.length > 0 && errors.length === 0) {
-          setResult({ ok: true, id: "" });
+          sileo.success({
+            title: "Asignaciones creadas",
+            description: `${ids.length} asignaci${ids.length === 1 ? "ón" : "ones"} creada${
+              ids.length === 1 ? "" : "s"
+            } correctamente.`,
+          });
         } else if (ids.length > 0) {
-          setResult({
-            ok: false,
-            error: `Se crearon ${ids.length} de ${items.length} asignaciones. ${errors.length} fallo${errors.length === 1 ? "" : "s"}.`,
+          sileo.warning({
+            title: "Asignaciones parciales",
+            description: `Se crearon ${ids.length} de ${items.length}. ${errors.length} fallo${
+              errors.length === 1 ? "" : "s"
+            }.${detalleErrores ? ` ${detalleErrores}` : ""}`,
           });
         } else {
-          setResult({
-            ok: false,
-            error: `No se creó ninguna asignación. ${errors[0] ?? ""}`,
+          sileo.error({
+            title: "No se creó ninguna asignación",
+            description: errors[0] ?? "Intenta de nuevo.",
           });
         }
         if (ids.length > 0) {
@@ -362,15 +358,23 @@ export function QuickAsignarFila(props: QuickAsignarFilaProps) {
           ...basePayload,
           actividadTitulo: actividadTituloFinal,
         });
-        setResult(r);
         if (r.ok) {
+          sileo.success({
+            title: "Asignación creada",
+            description: "La tarea se creó correctamente.",
+          });
           onCreated?.({ ok: true, ids: [r.id], count: 1 });
+        } else {
+          sileo.error({
+            title: "No se pudo crear la asignación",
+            description: r.error || "Intenta de nuevo.",
+          });
         }
       }
     } catch (err) {
-      setResult({
-        ok: false,
-        error:
+      sileo.error({
+        title: "Error al crear la asignación",
+        description:
           err instanceof Error ? err.message : "Error desconocido al crear la asignación.",
       });
     } finally {
@@ -581,43 +585,6 @@ export function QuickAsignarFila(props: QuickAsignarFilaProps) {
                   />
                 </div>
               </div>
-            ) : null}
-
-            {result ? (
-              result.ok ? (
-                isMulti ? (
-                  <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
-                    {multiIds.length} asignaci{multiIds.length === 1 ? "ón" : "ones"} creada
-                    {multiIds.length === 1 ? "" : "s"} correctamente.
-                    {multiErrors.length > 0 ? (
-                      <span className="ml-1 text-emerald-900">
-                        ({multiErrors.length} error{multiErrors.length === 1 ? "" : "es"}.)
-                      </span>
-                    ) : null}
-                  </div>
-                ) : isSelectionOnly ? (
-                  <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
-                    Supervisor asignado correctamente. Quedará guardado de forma permanente.
-                  </div>
-                ) : (
-                  <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
-                    Asignación creada correctamente.
-                  </div>
-                )
-              ) : (
-                <div className="space-y-1">
-                  <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
-                    {result.error}
-                  </div>
-                  {multiErrors.length > 0 ? (
-                    <ul className="max-h-28 list-disc overflow-y-auto rounded-lg border border-red-100 bg-red-50/60 px-5 py-2 text-[11px] text-red-700">
-                      {multiErrors.map((m, i) => (
-                        <li key={i}>{m}</li>
-                      ))}
-                    </ul>
-                  ) : null}
-                </div>
-              )
             ) : null}
           </div>
 

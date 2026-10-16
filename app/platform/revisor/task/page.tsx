@@ -199,8 +199,6 @@ export default async function RevisorTaskPage({
   const sections = buildSections(role);
   const sp = await searchParams;
   const statusFilter = getSearchParam(sp, "status") ?? "all";
-  const errorParam = getSearchParam(sp, "error");
-  const messageParam = getSearchParam(sp, "message");
 
   const admin =
     serviceKey && !serviceKey.includes("__REPLACE_ME__")
@@ -707,8 +705,6 @@ export default async function RevisorTaskPage({
       sections={sections}
       statusFilter={statusFilter}
       error={error}
-      errorParam={errorParam}
-      messageParam={messageParam}
       assignments={assignments}
       basePath={BASE_PATH}
       onSubmit={submitWork}

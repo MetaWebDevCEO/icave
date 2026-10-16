@@ -11,6 +11,7 @@ import {
 import {
   buildSections,
   resolveRoleForUser,
+  strongCheckIsRevisor,
 } from "@/lib/platform-roles";
 import { parseAsCalendarDate } from "@/lib/calendar-date";
 import {
@@ -615,6 +616,107 @@ async function saveComment(formData: FormData) {
   redirect("/platform/task?message=" + encodeURIComponent("Comentario enviado."));
 }
 
+async function markCompleted(formData: FormData) {
+  "use server";
+
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !anonKey || url.includes("__REPLACE_ME__") || anonKey.includes("__REPLACE_ME__")) {
+    redirect("/?error=" + encodeURIComponent("Configura Supabase primero (env vars)."));
+  }
+
+  const assignmentId = String(formData.get("assignment_id") ?? "").trim();
+  if (!assignmentId) {
+    redirect("/platform/task?error=" + encodeURIComponent("Falta assignment_id."));
+  }
+
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) redirect("/");
+
+  const { decidedRole } = await strongCheckIsRevisor(supabase, user.id, {
+    email: user.email ?? null,
+  });
+  if (decidedRole !== "revisor") {
+    redirect(
+      "/platform/task?error=" +
+        encodeURIComponent("Solo el revisor puede aprobar la tarea.")
+    );
+  }
+
+  const admin =
+    serviceKey && !serviceKey.includes("__REPLACE_ME__")
+      ? createSupabaseAdminClient(url, serviceKey, {
+          auth: { persistSession: false, autoRefreshToken: false },
+        })
+      : null;
+
+  const verifyClient = admin ?? supabase;
+  const verify = await verifyClient
+    .from("asignaciones")
+    .select("id, revisor_id")
+    .eq("id", assignmentId)
+    .maybeSingle();
+
+  let row = verify.data as { id: string; revisor_id?: string | null } | null;
+  let verifyError = verify.error;
+
+  if ((!row || verifyError) && admin && verifyClient !== admin) {
+    const fallback = await admin
+      .from("asignaciones")
+      .select("id, revisor_id")
+      .eq("id", assignmentId)
+      .maybeSingle();
+    row = fallback.data as { id: string; revisor_id?: string | null } | null;
+    verifyError = fallback.error;
+  }
+
+  if (verifyError || !row) {
+    redirect(
+      "/platform/task?error=" +
+        encodeURIComponent(verifyError?.message ?? "La asignación no existe.")
+    );
+  }
+
+  const payloadWithCompleted: Record<string, unknown> = {
+    status: "Completada",
+    completed_at: new Date().toISOString(),
+  };
+  const payloadSimple: Record<string, unknown> = {
+    status: "Completada",
+  };
+
+  const tryUpdate = async (payload: Record<string, unknown>) => {
+    const first = await supabase
+      .from("asignaciones")
+      .update(payload)
+      .eq("id", assignmentId);
+    if (!first.error) return null;
+    if (!admin) return first.error;
+    const second = await admin
+      .from("asignaciones")
+      .update(payload)
+      .eq("id", assignmentId);
+    return second.error;
+  };
+
+  let updateError = await tryUpdate(payloadWithCompleted);
+  if (isSchemaMismatchPostgres(updateError)) {
+    updateError = await tryUpdate(payloadSimple);
+  }
+
+  if (updateError) {
+    redirect("/platform/task?error=" + encodeURIComponent(updateError.message));
+  }
+
+  revalidatePath("/platform/task");
+  redirect("/platform/task?message=" + encodeURIComponent("Tarea marcada como completada."));
+}
+
 export default async function TaskPage({
   searchParams,
 }: {
@@ -659,8 +761,6 @@ export default async function TaskPage({
   }
 
   const supervisorFilter = getSearchParam(sp, "supervisor");
-  const errorParam = getSearchParam(sp, "error");
-  const messageParam = getSearchParam(sp, "message");
 
   const userEmail = normalizeEmail(user.email);
   const admin =
@@ -1111,8 +1211,6 @@ export default async function TaskPage({
       supervisorFilter={supervisorFilter}
       userOptions={userOptions}
       error={error}
-      errorParam={errorParam}
-      messageParam={messageParam}
       assignments={assignments}
       basePath="/platform/task"
       onSubmit={submitWork}
@@ -1120,6 +1218,7 @@ export default async function TaskPage({
       onSaveComment={saveComment}
       onDelete={deleteAssignment}
       onDeleteEvidence={deleteEvidenceFile}
+      onMarkCompleted={role === "revisor" ? markCompleted : undefined}
     />
   );
 }

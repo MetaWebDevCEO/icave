@@ -33,8 +33,8 @@ import {
 import {
   createAssignment,
   type AttachmentFileInput,
-  type CreateAssignmentResult,
 } from "./actions"
+import { sileo } from "sileo"
 
 type MatrizOption = { id: number; actividad: string }
 type SupervisorOption = {
@@ -107,7 +107,6 @@ export function AsignacionForm(props: AsignacionFormProps) {
 
   const fileInputRef = React.useRef<HTMLInputElement>(null)
   const [submitting, setSubmitting] = React.useState(false)
-  const [submitResult, setSubmitResult] = React.useState<CreateAssignmentResult | null>(null)
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const fileList = e.target.files
@@ -142,7 +141,6 @@ export function AsignacionForm(props: AsignacionFormProps) {
     setPublicacionDate(new Date())
     setEntregaDate(null)
     setPrioridad("medio")
-    setSubmitResult(null)
     if (fileInputRef.current) fileInputRef.current.value = ""
   }
 
@@ -154,17 +152,16 @@ export function AsignacionForm(props: AsignacionFormProps) {
   }
 
   async function handleCrearAsignacion() {
-    setSubmitResult(null)
     if (!actividadSeleccionada) {
-      setSubmitResult({ ok: false, error: "Selecciona una actividad de la matriz." })
+      sileo.error({ title: "Falta la actividad", description: "Selecciona una actividad de la matriz." })
       return
     }
     if (!supervisorFinalEmail) {
-      setSubmitResult({ ok: false, error: "Selecciona un supervisor a quién asignar la tarea." })
+      sileo.error({ title: "Falta el supervisor", description: "Selecciona un supervisor a quién asignar la tarea." })
       return
     }
     if (!entregaDate) {
-      setSubmitResult({ ok: false, error: "Selecciona fecha límite de entrega." })
+      sileo.error({ title: "Falta la fecha límite", description: "Selecciona fecha límite de entrega." })
       return
     }
     try {
@@ -201,21 +198,34 @@ export function AsignacionForm(props: AsignacionFormProps) {
         status: estado.toLowerCase(),
         attachmentFiles: pdfs,
       })
-      setSubmitResult(result)
 
       if (result.ok) {
+        const emailMsg = result.emailQueued
+          ? "Correo de notificación en proceso (llega en segundos)."
+          : result.emailSent
+            ? "Correo de notificación enviado al supervisor."
+            : `Tarea guardada, pero no se pudo enviar el correo: ${
+                result.emailError ?? "Error desconocido"
+              }`
+        sileo.success({
+          title: "Tarea creada correctamente",
+          description: `ID: ${result.id} · ${emailMsg}`,
+        })
         setActividadId("")
         setDescripcion("")
         setFiles([])
         if (fileInputRef.current) fileInputRef.current.value = ""
+      } else {
+        sileo.error({
+          title: "No se pudo crear la tarea",
+          description: result.error || "Intenta de nuevo.",
+        })
       }
     } catch (err) {
-      setSubmitResult({
-        ok: false,
-        error:
-          err instanceof Error
-            ? `Error al crear la asignación: ${err.message}`
-            : "Error desconocido al crear la asignación.",
+      sileo.error({
+        title: "Error al crear la asignación",
+        description:
+          err instanceof Error ? err.message : "Error desconocido al crear la asignación.",
       })
     } finally {
       setSubmitting(false)
@@ -743,48 +753,6 @@ export function AsignacionForm(props: AsignacionFormProps) {
                   </span>
                 </div>
               </div>
-
-              {/* Feedback del submit */}
-              {submitResult && (
-                <div
-                  role="status"
-                  className={cn(
-                    "rounded-lg border px-3 py-2 text-[12px] leading-relaxed",
-                    submitResult.ok
-                      ? "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900/50 dark:bg-emerald-950/40 dark:text-emerald-200"
-                      : "border-red-200 bg-red-50 text-red-800 dark:border-red-900/50 dark:bg-red-950/40 dark:text-red-200"
-                  )}
-                >
-                  {submitResult.ok ? (
-                    <div className="space-y-0.5">
-                      <div className="flex items-center gap-1.5 font-semibold">
-                        <CheckCircle className="h-3.5 w-3.5" />
-                        Tarea creada correctamente
-                      </div>
-                      <div>
-                        ID:{" "}
-                        <span className="font-mono text-[11px]">
-                          {submitResult.id}
-                        </span>
-                      </div>
-                      <div className="text-[11.5px] opacity-95">
-                        {submitResult.emailQueued
-                          ? "Correo de notificación en proceso (llega en segundos)."
-                          : submitResult.emailSent
-                          ? "Correo de notificación enviado al supervisor."
-                          : `Tarea guardada, pero no se pudo enviar el correo: ${
-                              submitResult.emailError ?? "Error desconocido"
-                            }`}
-                      </div>
-                    </div>
-                  ) : (
-                    <div>
-                      <div className="font-semibold">No se pudo crear la tarea</div>
-                      <div className="mt-0.5 opacity-95">{submitResult.error}</div>
-                    </div>
-                  )}
-                </div>
-              )}
 
               {/* Botones de acción */}
               <div className="flex flex-col gap-2 pt-2">

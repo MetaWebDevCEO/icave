@@ -110,8 +110,6 @@ function mapGotrueErrorMessage(e: GotrueErrLike, emailInvolved: string): string 
   return msg || "No se pudo crear el usuario.";
 }
 
-type SearchParams = Promise<Record<string, string | string[] | undefined>>;
-
 type RoleRowClient = {
   userId: string;
   roleCode: string | null;
@@ -238,14 +236,6 @@ function resolveCanonicalRoleFromUnknown(
   return null;
 }
 
-function getSearchParam(
-  sp: Record<string, string | string[] | undefined>,
-  key: string
-) {
-  const value = sp[key];
-  return typeof value === "string" ? value : undefined;
-}
-
 function normalizeAssignableRoleCode(value: unknown): string | null {
   if (typeof value !== "string" || !value.trim()) return null;
   const v = value.trim();
@@ -254,11 +244,7 @@ function normalizeAssignableRoleCode(value: unknown): string | null {
   return v;
 }
 
-export default async function UsuariosPage({
-  searchParams,
-}: {
-  searchParams: SearchParams;
-}) {
+export default async function UsuariosPage() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -326,10 +312,6 @@ export default async function UsuariosPage({
     currentRole = "usuario";
     sections = buildSections("revisor");
   }
-
-  const sp = await searchParams;
-  const errorParam = getSearchParam(sp, "error");
-  const messageParam = getSearchParam(sp, "message");
 
   let allUsersList: Array<{
     id: string;
@@ -1158,19 +1140,6 @@ export default async function UsuariosPage({
           {!canEdit && haveServiceRole && (
             <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-900/40 dark:bg-amber-950/40 dark:text-amber-100">
               Solo el rol <span className="font-medium">Revisor</span> puede crear o eliminar usuarios.
-            </div>
-          )}
-
-          {(errorParam || messageParam) && (
-            <div
-              className={[
-                "mt-4 rounded-xl border p-4 text-sm",
-                errorParam
-                  ? "border-red-200 bg-red-50 text-red-900 dark:border-red-900/40 dark:bg-red-950/40 dark:text-red-100"
-                  : "border-zinc-200 bg-zinc-50 text-zinc-900 dark:border-zinc-800 dark:bg-zinc-900/30 dark:text-zinc-100",
-              ].join(" ")}
-            >
-              {errorParam ?? messageParam}
             </div>
           )}
 

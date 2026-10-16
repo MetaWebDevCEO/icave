@@ -229,19 +229,6 @@ export default async function Home({
                   </div>
                 )}
 
-                {(errorParam || messageParam) && (
-                  <div
-                    className={[
-                      "mt-6 rounded-[1.35rem] px-5 py-4 text-sm",
-                      errorParam
-                        ? "bg-red-50/92 text-red-900"
-                        : "bg-white/72 text-[#43403b]",
-                    ].join(" ")}
-                  >
-                    {errorParam ?? messageParam}
-                  </div>
-                )}
-
                 {isSupabaseConfigured && user ? (
                   <div className="mt-8 rounded-[1.5rem] bg-[#f7f7f5] p-6">
                     <div className="text-sm text-[#7b766f]">Sesion iniciada como</div>
