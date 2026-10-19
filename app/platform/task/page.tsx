@@ -613,6 +613,7 @@ async function saveComment(formData: FormData) {
     redirect("/platform/task?error=" + encodeURIComponent(updateError.message));
   }
 
+  revalidatePath("/platform/task");
   redirect("/platform/task?message=" + encodeURIComponent("Comentario enviado."));
 }
 
@@ -771,11 +772,11 @@ export default async function TaskPage({
       : null;
 
   const selectFieldsBase =
-    "id, created_at, status, title, description, due_at, priority, revisor_id, assigned_to_email";
+    "id, created_at, status, title, description, due_at, priority, revisor_id, assigned_to_email, reviewer_comment, reviewer_comment_at";
   const selectFieldsMid =
-    "id, created_at, status, title, description, due_at, priority, revisor_id, assigned_to_email, submission_path, submission_files, submitted_at, submitted_by_email";
+    "id, created_at, status, title, description, due_at, priority, revisor_id, assigned_to_email, submission_path, submission_files, submitted_at, submitted_by_email, reviewer_comment, reviewer_comment_at";
   const selectFieldsExtended =
-    "id, created_at, status, title, description, due_at, priority, revisor_id, assigned_to_email, submission_name, submission_path, submission_files, submitted_at, submitted_by_email";
+    "id, created_at, status, title, description, due_at, priority, revisor_id, assigned_to_email, submission_name, submission_path, submission_files, submitted_at, submitted_by_email, reviewer_comment, reviewer_comment_at";
 
   const fetchSupervisor = async (client: SupabaseClient) => {
     // NOTA: ordenamos POR created_at DESC (las más recientes PRIMERO) y ampliamos

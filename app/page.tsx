@@ -1,6 +1,7 @@
 import { createClient } from "@/utils/supabase/server";
 import Image from "next/image";
 import Link from "next/link";
+import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { resolveRoleForUser, dashboardForRole } from "@/lib/platform-roles";
 
@@ -61,12 +62,25 @@ export default async function Home({
     // Resolver rol y redirigir directamente al dashboard correspondiente
     const { data: { user } } = await supabase.auth.getUser();
     if (user) {
+      let dest = "/platform";
       try {
         const role = await resolveRoleForUser(supabase, user.id, { email: user.email });
-        redirect(dashboardForRole(role));
+        dest = dashboardForRole(role);
+
+        // Marca de "viene del login" para que el supervisor vea el pop de
+        // actividades pendientes. Se limpia desde el cliente tras mostrarlo.
+        if (role === "usuario") {
+          const jar = await cookies();
+          jar.set("icave_supervisor_login", "1", {
+            path: "/",
+            maxAge: 120,
+            sameSite: "lax",
+          });
+        }
       } catch {
-        redirect("/platform");
+        dest = "/platform";
       }
+      redirect(dest);
     }
 
     redirect("/platform");

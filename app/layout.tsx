@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Geist_Mono } from "next/font/google";
 import { FlashNotifications } from "@/components/flash-notifications";
+import { CookieConsent } from "@/components/cookie-consent";
 import "sileo/styles.css";
 import "./globals.css";
 
@@ -123,6 +124,7 @@ export default function RootLayout({
         />
         {children}
         <FlashNotifications />
+        <CookieConsent />
       </body>
     </html>
   );

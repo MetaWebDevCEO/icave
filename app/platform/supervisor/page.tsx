@@ -2,6 +2,7 @@ import { PlatformShell } from "@/app/platform/platform-shell";
 import { createClient } from "@/utils/supabase/server";
 import { getRoleFromUserRolesTable, buildSections } from "@/lib/platform-roles";
 import { redirect } from "next/navigation";
+import { cookies } from "next/headers";
 import { SupervisorDashboard } from "@/app/platform/supervisor/dashboard";
 
 type AssignmentRow = {
@@ -128,6 +129,21 @@ export default async function SupervisorDashboardPage() {
   }).length;
 
   // -------------------------------------------------------------------
+  // Widget de advertencia: días restantes del mes y actividades sin entregar
+  // -------------------------------------------------------------------
+  const diasRestantes = Math.max(0, lastDay - now.getUTCDate());
+  const tareasFaltantes = rows.filter((r) => {
+    const status = (r.status ?? "").trim().toLowerCase();
+    const entregada = status.includes("entreg");
+    return !isCompleted(status) && !entregada;
+  }).length;
+
+  // Pop de bienvenida (solo cuando viene del login y hay pendientes)
+  const jar = await cookies();
+  const fromLogin = jar.get("icave_supervisor_login")?.value === "1";
+  const loginAlert = fromLogin && tareasFaltantes > 0;
+
+  // -------------------------------------------------------------------
   // Distribución por prioridad (del mes)
   // -------------------------------------------------------------------
   const priorityMap = new Map<string, number>();
@@ -190,6 +206,9 @@ export default async function SupervisorDashboardPage() {
         dailySeries={days}
         monthlySeries={months}
         selectedMonth={selectedYm}
+        diasRestantes={diasRestantes}
+        tareasFaltantes={tareasFaltantes}
+        loginAlert={loginAlert}
       />
     </PlatformShell>
   );

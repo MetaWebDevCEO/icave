@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   AreaChart,
   Area,
@@ -40,6 +40,9 @@ type Props = {
   dailySeries: DailyPoint[];
   monthlySeries: MonthlyPoint[];
   selectedMonth: string;
+  diasRestantes: number;
+  tareasFaltantes: number;
+  loginAlert?: boolean;
 };
 
 const COLORS = {
@@ -335,6 +338,153 @@ function StatusStackedBar({ data }: { data: { label: string; value: number; colo
   );
 }
 
+// ----- Widget de advertencia: cierre de mes y actividades sin entregar -----
+function MonthlyDeadlineWidget({
+  diasRestantes,
+  tareasFaltantes,
+  monthName,
+}: {
+  diasRestantes: number;
+  tareasFaltantes: number;
+  monthName: string;
+}) {
+  const isDone = tareasFaltantes === 0;
+  const isUrgent = !isDone && diasRestantes <= 3;
+  const isSoon = !isDone && diasRestantes <= 7;
+
+  const accent = isDone ? COLORS.completadas : isUrgent ? COLORS.vencidas : isSoon ? "#d97706" : "#0a0a0a";
+
+  const message = isDone
+    ? "Tienes todas tus actividades del mes entregadas."
+    : isUrgent
+      ? "Quedan pocos días para el cierre. Entrega tus actividades pendientes cuanto antes."
+      : isSoon
+        ? "El mes está por cerrar. Sube tus actividades pendientes."
+        : "Aún tienes actividades por entregar este mes.";
+
+  return (
+    <div
+      className="flex flex-col gap-4 rounded-xl bg-white p-4 ring-1 ring-inset ring-zinc-200 dark:bg-zinc-950 dark:ring-zinc-800 sm:flex-row sm:items-center sm:justify-between"
+      style={{ borderLeft: `4px solid ${accent}` }}
+    >
+      <div className="flex items-center gap-6">
+        <div className="flex flex-col">
+          <span className="text-[10px] uppercase tracking-[0.18em] text-zinc-500">
+            Días restantes
+          </span>
+          <span className="text-3xl font-bold tracking-tight text-zinc-900 dark:text-zinc-50">
+            {diasRestantes}
+          </span>
+          <span className="text-[11px] text-zinc-500">Cierre de {monthName}</span>
+        </div>
+
+        <div className="h-12 w-px bg-zinc-200 dark:bg-zinc-800" />
+
+        <div className="flex flex-col">
+          <span className="text-[10px] uppercase tracking-[0.18em] text-zinc-500">
+            Sin entregar
+          </span>
+          <span className="text-3xl font-bold tracking-tight" style={{ color: accent }}>
+            {tareasFaltantes}
+          </span>
+          <span className="text-[11px] text-zinc-500">
+            {tareasFaltantes === 1 ? "actividad del mes" : "actividades del mes"}
+          </span>
+        </div>
+      </div>
+
+      <p className="max-w-xs text-xs text-zinc-600 dark:text-zinc-400">{message}</p>
+    </div>
+  );
+}
+
+// ----- Pop de bienvenida: aviso de cierre de mes -----
+function LoginAlertModal({
+  open,
+  tareasFaltantes,
+  diasRestantes,
+  monthName,
+  onClose,
+}: {
+  open: boolean;
+  tareasFaltantes: number;
+  diasRestantes: number;
+  monthName: string;
+  onClose: () => void;
+}) {
+  if (!open) return null;
+
+  const urgent = diasRestantes <= 3;
+
+  return (
+    <div
+      className="fixed inset-0 z-[99999] flex items-center justify-center bg-zinc-950/50 p-4 backdrop-blur-sm"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="login-alert-title"
+    >
+      <div className="animate-in fade-in zoom-in-95 w-full max-w-sm rounded-2xl bg-white p-6 shadow-xl ring-1 ring-inset ring-zinc-200 duration-200 dark:bg-zinc-950 dark:ring-zinc-800">
+        <div className="flex flex-col gap-1">
+          <span className="text-[11px] uppercase tracking-[0.18em] text-zinc-500">
+            Recordatorio de cierre
+          </span>
+          <h2
+            id="login-alert-title"
+            className="text-xl font-semibold tracking-tight text-zinc-950 dark:text-zinc-50"
+          >
+            Actividades pendientes
+          </h2>
+        </div>
+
+        <div className="mt-5 grid grid-cols-2 gap-3">
+          <div className="flex flex-col rounded-xl bg-amber-50 p-3 ring-1 ring-inset ring-amber-200 dark:bg-amber-950/40 dark:ring-amber-900">
+            <span className="text-3xl font-semibold tracking-tight text-amber-600 dark:text-amber-300">
+              {tareasFaltantes}
+            </span>
+            <span className="mt-0.5 text-[11px] uppercase tracking-wide text-amber-700/70 dark:text-amber-200/70">
+              Sin entregar
+            </span>
+          </div>
+          <div
+            className={[
+              "flex flex-col rounded-xl p-3 ring-1 ring-inset",
+              urgent
+                ? "bg-red-50 ring-red-200 dark:bg-red-950/40 dark:ring-red-900"
+                : "bg-zinc-100 ring-zinc-200 dark:bg-zinc-800 dark:ring-zinc-700",
+            ].join(" ")}
+          >
+            <span
+              className={[
+                "text-3xl font-semibold tracking-tight",
+                urgent ? "text-red-600 dark:text-red-300" : "text-zinc-900 dark:text-zinc-50",
+              ].join(" ")}
+            >
+              {diasRestantes}
+            </span>
+            <span className="mt-0.5 text-[11px] uppercase tracking-wide text-zinc-500">
+              Días restantes
+            </span>
+          </div>
+        </div>
+
+        <p className="mt-5 text-sm text-zinc-600 dark:text-zinc-400">
+          Te faltan {tareasFaltantes} {tareasFaltantes === 1 ? "actividad" : "actividades"} y
+          tienes {diasRestantes} {diasRestantes === 1 ? "día" : "días"} para concluirlas antes del
+          cierre de {monthName}.
+        </p>
+
+        <button
+          type="button"
+          onClick={onClose}
+          className="mt-6 h-11 w-full rounded-full bg-zinc-900 text-sm font-medium text-white transition-colors hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
+        >
+          Entendido
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ----- Página principal -----
 export function SupervisorDashboard({
   kpis,
@@ -342,7 +492,20 @@ export function SupervisorDashboard({
   dailySeries,
   monthlySeries,
   selectedMonth,
+  diasRestantes,
+  tareasFaltantes,
+  loginAlert,
 }: Props) {
+  const [showLoginAlert, setShowLoginAlert] = useState(Boolean(loginAlert));
+
+  // El pop se muestra al iniciar sesión; la marca en cookie se limpia aquí
+  // para que no vuelva a aparecer al refrescar.
+  useEffect(() => {
+    if (!loginAlert) return;
+    setShowLoginAlert(true);
+    document.cookie = "icave_supervisor_login=; path=/; max-age=0";
+  }, [loginAlert]);
+
   const monthName = (() => {
     const [y, m] = selectedMonth.split("-").map(Number);
     const d = new Date(Date.UTC(y, m - 1, 1));
@@ -374,6 +537,13 @@ export function SupervisorDashboard({
         <h1 className="text-xl font-bold tracking-tight text-zinc-900 dark:text-zinc-50">Mi Rendimiento</h1>
         <p className="text-xs text-zinc-500">Estadísticas de tus tareas · {monthName}</p>
       </div>
+
+      {/* Widget de advertencia: cierre de mes */}
+      <MonthlyDeadlineWidget
+        diasRestantes={diasRestantes}
+        tareasFaltantes={tareasFaltantes}
+        monthName={monthName}
+      />
 
       {/* Fila 1: 3 KPI cards pequeñas */}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
@@ -429,6 +599,14 @@ export function SupervisorDashboard({
           <PriorityDonutChart data={priorityData} />
         </div>
       </div>
+
+      <LoginAlertModal
+        open={showLoginAlert}
+        tareasFaltantes={tareasFaltantes}
+        diasRestantes={diasRestantes}
+        monthName={monthName}
+        onClose={() => setShowLoginAlert(false)}
+      />
     </div>
   );
 }
