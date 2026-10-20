@@ -112,13 +112,16 @@ function deriveDisplayName(
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
-function classifyStatus(raw: unknown): "completadas" | "enCurso" | "pendientes" {
+function classifyStatus(raw: unknown): "completadas" | "entregadas" | "pendientes" {
   const s = typeof raw === "string" ? raw.trim().toLowerCase() : "";
+  if (s.includes("entreg")) {
+    return "entregadas";
+  }
   if (s.includes("complet") || s.includes("done") || s.includes("finaliz")) {
     return "completadas";
   }
   if (s.includes("curso") || s.includes("progreso") || s.includes("progress")) {
-    return "enCurso";
+    return "entregadas";
   }
   if (
     s.includes("open") ||
@@ -127,31 +130,22 @@ function classifyStatus(raw: unknown): "completadas" | "enCurso" | "pendientes" 
     s.includes("espera")
   ) {
     if (s.includes("pend")) return "pendientes";
-    return "enCurso";
+    return "entregadas";
   }
   if (s.includes("pend")) return "pendientes";
   return s.length === 0 ? "pendientes" : "pendientes";
 }
 
 function fallsInMonth(
-  dateFields: { created_at?: unknown; due_at?: unknown; submitted_at?: unknown },
+  dateFields: { created_at?: unknown },
   startISO: string,
   endISO: string
 ): boolean {
-  const candidates = [dateFields.created_at, dateFields.due_at, dateFields.submitted_at];
-  for (const c of candidates) {
-    if (typeof c !== "string" || !c) continue;
-    try {
-      const t = new Date(c).getTime();
-      if (!Number.isFinite(t)) continue;
-      if (t >= new Date(startISO).getTime() && t < new Date(endISO).getTime()) {
-        return true;
-      }
-    } catch {
-      /* ignore */
-    }
-  }
-  return false;
+  const c = dateFields.created_at;
+  if (typeof c !== "string" || !c) return false;
+  const t = new Date(c).getTime();
+  if (!Number.isFinite(t)) return false;
+  return t >= new Date(startISO).getTime() && t < new Date(endISO).getTime();
 }
 
 function getSearchParam(
@@ -543,7 +537,7 @@ export default async function SupervisoresPage({
 
   const statsByEmail = new Map<
     string,
-    { completadas: number; enCurso: number; pendientes: number }
+    { completadas: number; entregadas: number; pendientes: number }
   >();
   for (const row of asignacionesRows) {
     if (!fallsInMonth(row, startISO, endISO)) continue;
@@ -555,7 +549,7 @@ export default async function SupervisoresPage({
     const bucket = classifyStatus(row.status);
     const cur = statsByEmail.get(email) ?? {
       completadas: 0,
-      enCurso: 0,
+      entregadas: 0,
       pendientes: 0,
     };
     cur[bucket] = (cur[bucket] ?? 0) + 1;
@@ -590,7 +584,7 @@ export default async function SupervisoresPage({
     avatarBucket: string;
     avatarPath: string;
     fallbackAvatar: string | null;
-    stats: { completadas: number; enCurso: number; pendientes: number };
+    stats: { completadas: number; entregadas: number; pendientes: number };
   };
 
   const preSupervisores: PreSupervisor[] = [];
@@ -609,7 +603,7 @@ export default async function SupervisoresPage({
     const stats =
       email && statsByEmail.has(email)
         ? statsByEmail.get(email)!
-        : { completadas: 0, enCurso: 0, pendientes: 0 };
+        : { completadas: 0, entregadas: 0, pendientes: 0 };
 
     const meta =
       u.user_metadata && typeof u.user_metadata === "object"
@@ -648,7 +642,7 @@ export default async function SupervisoresPage({
 
     const stats = statsByEmail.get(email) ?? {
       completadas: 0,
-      enCurso: 0,
+      entregadas: 0,
       pendientes: 0,
     };
 

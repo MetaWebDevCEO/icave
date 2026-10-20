@@ -366,23 +366,18 @@ export default async function RevisorTaskPage({
       status === "new" ||
       status.includes("nueva");
 
-    const isProgress =
-      status.includes("prog") ||
-      status.includes("curso") ||
-      status.includes("inici") ||
-      status.includes("ejecu") ||
-      status.includes("desarr");
+    const isDelivered = status.includes("entreg");
 
     const isCompleted =
-      status.includes("comp") ||
-      status.includes("done") ||
-      status.includes("termin") ||
-      status.includes("final") ||
-      status.includes("cerrad") ||
-      status.includes("entreg");
+      !isDelivered &&
+      (status.includes("comp") ||
+        status.includes("done") ||
+        status.includes("termin") ||
+        status.includes("final") ||
+        status.includes("cerrad"));
 
-    if (statusFilter === "pending") return isPending && !isCompleted;
-    if (statusFilter === "progress") return isProgress && !isCompleted;
+    if (statusFilter === "pending") return isPending && !isCompleted && !isDelivered;
+    if (statusFilter === "delivered") return isDelivered;
     if (statusFilter === "completed") return isCompleted;
     return true;
   }));

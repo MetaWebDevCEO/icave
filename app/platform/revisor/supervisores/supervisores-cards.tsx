@@ -11,7 +11,7 @@ export type SupervisorCardData = {
   avatarUrl: string | null;
   stats: {
     completadas: number;
-    enCurso: number;
+    entregadas: number;
     pendientes: number;
   };
 };
@@ -60,14 +60,26 @@ function MonthFilter({ value, options }: { value: string; options: MonthOption[]
 }
 
 function totalAsignaciones(s: SupervisorCardData["stats"]) {
-  return s.completadas + s.enCurso + s.pendientes;
+  return s.completadas + s.entregadas + s.pendientes;
 }
 
 function progresoPorcentaje(s: SupervisorCardData["stats"]): number {
   const total = totalAsignaciones(s);
   if (total <= 0) return 0;
-  const peso = s.completadas + s.enCurso * 0.5;
+  const peso = s.completadas + s.entregadas * 0.5;
   return Math.round((peso / total) * 100);
+}
+
+function progresoSegmentos(s: SupervisorCardData["stats"]) {
+  const total = totalAsignaciones(s);
+  if (total <= 0) {
+    return { completadas: 0, entregadas: 0 };
+  }
+
+  return {
+    completadas: (s.completadas / total) * 100,
+    entregadas: ((s.entregadas * 0.5) / total) * 100,
+  };
 }
 
 function StatPill({
@@ -97,6 +109,7 @@ function StatPill({
 function SupervisorCard({ s }: { s: SupervisorCardData }) {
   const pct = progresoPorcentaje(s.stats);
   const total = totalAsignaciones(s.stats);
+  const segmentos = progresoSegmentos(s.stats);
 
   return (
     <div className="bg-white rounded-xl shadow-sm border border-zinc-200/80 p-5 flex flex-col gap-4 hover:shadow-md hover:border-zinc-300 transition-all">
@@ -130,17 +143,27 @@ function SupervisorCard({ s }: { s: SupervisorCardData }) {
           <span className="text-[11px] font-semibold text-zinc-700">{pct}%</span>
         </div>
         <div className="w-full h-1.5 bg-zinc-100 rounded-full overflow-hidden">
-          <div
-            className="h-full rounded-full transition-all"
-            style={{ width: `${pct}%`, backgroundColor: "#eab308" }}
-          />
+          <div className="flex h-full w-full">
+            {segmentos.entregadas > 0 ? (
+              <div
+                className="h-full transition-all"
+                style={{ width: `${segmentos.entregadas}%`, backgroundColor: "#7c3aed" }}
+              />
+            ) : null}
+            {segmentos.completadas > 0 ? (
+              <div
+                className="h-full transition-all"
+                style={{ width: `${segmentos.completadas}%`, backgroundColor: "#16a34a" }}
+              />
+            ) : null}
+          </div>
         </div>
       </div>
 
       <div className="flex items-start justify-between gap-2 pt-1 border-t border-zinc-100">
-        <StatPill label="Completadas" value={s.stats.completadas} colorHex="#023674" />
+        <StatPill label="Completadas" value={s.stats.completadas} colorHex="#16a34a" />
         <div className="w-px h-10 bg-zinc-100" />
-        <StatPill label="En Curso" value={s.stats.enCurso} colorHex="#3b82f6" />
+        <StatPill label="Entregadas" value={s.stats.entregadas} colorHex="#7c3aed" />
         <div className="w-px h-10 bg-zinc-100" />
         <StatPill label="Pendientes" value={s.stats.pendientes} colorHex="#f59e0b" />
       </div>

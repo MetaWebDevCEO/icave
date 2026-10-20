@@ -16,6 +16,7 @@ type AssignmentRow = {
 
 const isCompleted = (s: string) => /comp|done|termin|final|cerrad/.test(s);
 const isProgress = (s: string) => /prog|curso|inici|ejecu|desarr|entreg/.test(s);
+const isDelivered = (s: string) => /entreg/.test(s);
 const isPending = (s: string) => /pend|asign|abiert|nueva/.test(s) || s === "";
 
 const parseDate = (v: string | null): Date | null => {
@@ -114,7 +115,7 @@ export default async function SupervisorDashboardPage() {
   // -------------------------------------------------------------------
   const total = rows.length;
   const completadas = rows.filter((r) => isCompleted((r.status ?? "").toLowerCase())).length;
-  const enCurso = rows.filter((r) => isProgress((r.status ?? "").toLowerCase())).length;
+  const entregadas = rows.filter((r) => isDelivered((r.status ?? "").toLowerCase())).length;
   const pendientes = rows.filter((r) => isPending((r.status ?? "").toLowerCase())).length;
   const vencidas = rows.filter((r) => {
     const due = parseDate(r.due_at);
@@ -201,7 +202,7 @@ export default async function SupervisorDashboardPage() {
       currentUserEmail={user.email ?? undefined}
     >
       <SupervisorDashboard
-        kpis={{ total, completadas, enCurso, pendientes, vencidas, avance, urgentesPendientes }}
+        kpis={{ total, completadas, entregadas, pendientes, vencidas, avance, urgentesPendientes }}
         priorityData={priorityData}
         dailySeries={days}
         monthlySeries={months}

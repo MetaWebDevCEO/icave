@@ -23,7 +23,7 @@ import {
 type Kpis = {
   total: number;
   completadas: number;
-  enCurso: number;
+  entregadas: number;
   pendientes: number;
   vencidas: number;
   avance: number;
@@ -284,7 +284,9 @@ function StatusStackedBar({ data }: { data: { label: string; value: number; colo
   return (
     <div className="flex flex-col gap-3">
       <div className="flex h-2.5 w-full overflow-hidden rounded-full bg-zinc-100 dark:bg-zinc-800">
-        {data.map((d) => {
+        {data
+          .filter((d) => d.label === "Completadas" || d.label === "Entregadas")
+          .map((d) => {
           const pct = (d.value / total) * 100;
           if (pct === 0) return null;
           const isHovered = hovered === d.label;
@@ -526,7 +528,7 @@ export function SupervisorDashboard({
 
   const statusData = [
     { label: "Completadas", value: kpis.completadas, color: COLORS.completadas },
-    { label: "En curso", value: kpis.enCurso, color: COLORS.enCurso },
+    { label: "Entregadas", value: kpis.entregadas, color: COLORS.entregadas },
     { label: "Pendientes", value: kpis.pendientes, color: COLORS.pendientes },
   ];
 

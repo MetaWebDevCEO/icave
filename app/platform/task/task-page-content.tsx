@@ -117,7 +117,7 @@ export function TaskPageContent({
               >
                 <option value="all">Todas</option>
                 <option value="pending">Pendientes</option>
-                <option value="progress">En curso</option>
+                <option value="delivered">Entregadas</option>
                 <option value="completed">Completadas</option>
               </select>
             </label>

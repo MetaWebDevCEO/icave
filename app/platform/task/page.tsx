@@ -1045,28 +1045,24 @@ export default async function TaskPage({
       status === "new" ||
       status.includes("nueva");
 
-    const isProgress =
-      status.includes("prog") ||    // Progreso / Progress
-      status.includes("curso") ||   // En curso
-      status.includes("inici") ||   // Iniciada
-      status.includes("ejecu") ||   // En ejecución
-      status.includes("desarr");    // En desarrollo
+    const isDelivered =
+      status.includes("entreg");    // Entregada
 
     const isCompleted =
-      status.includes("comp") ||    // Completada / Completed
-      status.includes("done") ||    // Done
-      status.includes("termin") ||  // Terminada
-      status.includes("final") ||   // Finalizada / Finalizada
-      status.includes("cerrad") ||  // Cerrada
-      status.includes("entreg");    // Entregada
+      !isDelivered &&
+      (status.includes("comp") ||    // Completada / Completed
+        status.includes("done") ||   // Done
+        status.includes("termin") || // Terminada
+        status.includes("final") ||  // Finalizada
+        status.includes("cerrad"));  // Cerrada
 
     const passStatus =
       statusFilter === "all"
         ? true
         : statusFilter === "pending"
-          ? isPending && !isCompleted
-          : statusFilter === "progress"
-            ? isProgress && !isCompleted
+          ? isPending && !isCompleted && !isDelivered
+          : statusFilter === "delivered"
+            ? isDelivered
             : statusFilter === "completed"
               ? isCompleted
               : true;

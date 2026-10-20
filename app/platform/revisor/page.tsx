@@ -16,6 +16,7 @@ type AssignmentStat = {
   created_at: string | null;
   due_at: string | null;
   submitted_at: string | null;
+  completed_at: string | null;
   priority: string | null;
   assigned_to_email: string | null;
 };
@@ -44,14 +45,14 @@ const ymKey = (d: Date) =>
 const ymdKey = (d: Date) =>
   `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
 
-// Detectar si es prioridad urgente (impacto alto)
-const isHighImpact = (p: string | null) => {
+// Normalizar prioridad para agrupar métricas del dashboard
+const getPriorityBucket = (p: string | null) => {
   const pl = (p ?? "").trim().toLowerCase();
-  if (!pl) return false;
-  if (pl === "urgente") return true;
-  if (pl.includes("no urg")) return false;
-  if (pl.includes("urg")) return true;
-  return false;
+  if (!pl) return "medio" as const;
+  if (pl.includes("no urg")) return "no_urgente" as const;
+  if (pl.includes("urg")) return "urgente" as const;
+  if (pl.includes("med")) return "medio" as const;
+  return "medio" as const;
 };
 
 export default async function RevisorDashboardPage() {
@@ -97,11 +98,11 @@ export default async function RevisorDashboardPage() {
   // Carga de asignaciones (todas, sin límite de página)
   // -------------------------------------------------------------------
   const selectFieldsBase =
-    "id, created_at, status, title, description, due_at, priority, revisor_id, assigned_to_email";
+    "id, created_at, status, title, description, due_at, completed_at, priority, revisor_id, assigned_to_email";
   const selectFieldsMid =
-    "id, created_at, status, title, description, due_at, priority, revisor_id, assigned_to_email, submission_path, submission_files, submitted_at, submitted_by_email";
+    "id, created_at, status, title, description, due_at, completed_at, priority, revisor_id, assigned_to_email, submission_path, submission_files, submitted_at, submitted_by_email";
   const selectFieldsExtended =
-    "id, created_at, status, title, description, due_at, priority, revisor_id, assigned_to_email, submission_name, submission_path, submission_files, submitted_at, submitted_by_email";
+    "id, created_at, status, title, description, due_at, completed_at, priority, revisor_id, assigned_to_email, submission_name, submission_path, submission_files, submitted_at, submitted_by_email";
 
   // Fallback de esquema igual que en task/page.tsx
   const isSchemaMismatch = (err: unknown) => {
@@ -206,7 +207,7 @@ export default async function RevisorDashboardPage() {
 
   // -------------------------------------------------------------------
   // 2. Días de Actividad (mes SELECCIONADO) - día 1 al último día del mes
-  //    Muestra creadas (created_at) vs entregadas (submitted_at) por día
+  //    Muestra creadas (created_at), entregadas (submitted_at) y completadas (completed_at) por día
   // -------------------------------------------------------------------
   const lastDay = new Date(Date.UTC(selYear, selMonth, 0)).getUTCDate();
 
@@ -223,38 +224,29 @@ export default async function RevisorDashboardPage() {
       const s = parseDate(r.submitted_at);
       return s && ymdKey(s) === key;
     }).length;
+    const completadas = monthRows.filter((r) => {
+      const c = parseDate(r.completed_at);
+      return c && ymdKey(c) === key;
+    }).length;
 
     dailySeries.push({
       dia: String(day),
       creadas,
       entregadas,
-      total: creadas + entregadas,
+      completadas,
+      total: creadas + entregadas + completadas,
     });
   }
 
   // -------------------------------------------------------------------
-  // 3. Clasificación de Impacto (tareas urgentes: completadas vs pendientes)
+  // 3. Clasificación de Impacto (tareas creadas por prioridad)
   // -------------------------------------------------------------------
-  const altoImpacto = monthRows.filter((r) => isHighImpact(r.priority));
-  const altoImpactoTotal = altoImpacto.length;
-  const altoImpactoCompletadas = altoImpacto.filter((r) =>
-    isCompletedStatus((r.status ?? "").trim().toLowerCase())
+  const impactoUrgente = monthRows.filter((r) => getPriorityBucket(r.priority) === "urgente").length;
+  const impactoMedio = monthRows.filter((r) => getPriorityBucket(r.priority) === "medio").length;
+  const impactoNoUrgente = monthRows.filter(
+    (r) => getPriorityBucket(r.priority) === "no_urgente"
   ).length;
-  const altoImpactoPendientes = altoImpactoTotal - altoImpactoCompletadas;
-  const altoImpactoAvance =
-    altoImpactoTotal > 0 ? Math.round((altoImpactoCompletadas / altoImpactoTotal) * 100) : 0;
-
-  // -------------------------------------------------------------------
-  // 4. Día con Mayor Actividad (día del mes con más entregas/subidas)
-  // -------------------------------------------------------------------
-  let diaMaxActividad = "";
-  let maxEntregas = 0;
-  dailySeries.forEach((d) => {
-    if (d.entregadas > maxEntregas) {
-      maxEntregas = d.entregadas;
-      diaMaxActividad = d.dia;
-    }
-  });
+  const impactoTotal = impactoUrgente + impactoMedio + impactoNoUrgente;
 
   return (
     <PlatformShell
@@ -267,13 +259,11 @@ export default async function RevisorDashboardPage() {
         cumplimientoSupervisores={cumplimientoSupervisores}
         dailySeries={dailySeries}
         impactoAlto={{
-          total: altoImpactoTotal,
-          completadas: altoImpactoCompletadas,
-          pendientes: altoImpactoPendientes,
-          avance: altoImpactoAvance,
+          total: impactoTotal,
+          urgente: impactoUrgente,
+          medio: impactoMedio,
+          noUrgente: impactoNoUrgente,
         }}
-        diaMaxActividad={diaMaxActividad || "—"}
-        diaMaxEntregas={maxEntregas}
         selectedMonth={selectedYm}
       />
     </PlatformShell>
