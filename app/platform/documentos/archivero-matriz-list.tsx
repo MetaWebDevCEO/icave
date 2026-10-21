@@ -14,8 +14,14 @@ import {
   updateAssignmentBasics,
   type UpdateAssignmentBasicsResult,
 } from "@/app/platform/revisor/asignacion/actions";
-import { setMatrizSupervisor } from "./matriz-supervisor-actions";
+import {
+  setMatrizSupervisor,
+  deleteMatrizActividad,
+  createMatrizActividad,
+  updateMatrizActividad,
+} from "./matriz-supervisor-actions";
 import { sileo } from "sileo";
+import { useRouter } from "next/navigation";
 
 export type FilaMatriz = {
   id: string;
@@ -23,6 +29,18 @@ export type FilaMatriz = {
   actividad: string;
   frecuencia: string;
   created_at: string | null;
+};
+
+/**
+ * Asignación materializada desde una fila de la matriz.
+ * key del Map = displayId de la fila de matriz (NO el assignmentId).
+ */
+export type AsignacionCreadaMeta = {
+  id: string;
+  title: string;
+  dueAtISO: string;
+  status?: string | null;
+  supervisorEmail?: string | null;
 };
 
 type Props = {
@@ -36,6 +54,7 @@ type Props = {
   vacias: number;
   total: number;
   initialSupervisoresAsignados: Map<number, SupervisorOption>;
+  initialAsignacionesCreadas: Map<number, AsignacionCreadaMeta>;
 };
 
 function toISOAtMidnight(input: Date | string): string {
@@ -117,20 +136,23 @@ function initialsOf(input: string | null | undefined): string {
 type DialogKind =
   | null
   | { kind: "seleccionarSupervisor"; displayId: number }
-  | { kind: "nuevaAsignacionFueraDeMatriz" }
+  | { kind: "crearAsignacionFila"; displayId: number }
+  | { kind: "nuevaActividad" }
   | { kind: "reasignarMasivo" }
   | {
-      kind: "editarAsignacion";
+      kind: "editarFila";
       displayId: number;
-      assignmentId: string;
-      initialTitle: string;
-      initialDueAtISO: string;
+      /** id de la asignación creada desde la fila (null si aún no existe). */
+      assignmentId: string | null;
+      /** Nombre actual de la actividad en la matriz. */
+      initialActividad: string;
+      /** Fecha de entrega de la asignación o de la pre-configuración. */
+      initialFechaISO: string;
     }
   | {
-      kind: "preconfigurarFila";
+      kind: "confirmarEliminarFila";
       displayId: number;
-      initialTitle: string;
-      initialFechaISO: string;
+      actividad: string;
     };
 
 export function ArchiveroMatrizList(props: Props) {
@@ -145,6 +167,7 @@ export function ArchiveroMatrizList(props: Props) {
     vacias,
     total,
     initialSupervisoresAsignados,
+    initialAsignacionesCreadas,
   } = props;
 
   const [dialog, setDialog] = React.useState<DialogKind>(null);
@@ -169,31 +192,50 @@ export function ArchiveroMatrizList(props: Props) {
   const [creatingIds, setCreatingIds] = React.useState<Set<number>>(new Set());
 
   /**
-   * Cada vez que una fila materializa la asignación via Check, guardamos
-   * aquí el id/titulo/fecha para que el botón Editar lápiz pueda abrirla
-   * y modificar (título + fecha vencimiento).
+   * Asignaciones ya creadas por fila. Se inicializa desde BD (prop
+   * `initialAsignacionesCreadas`, que lee el marcador `[Matriz] #N` de la
+   * descripción) para que sobreviva a un F5, y se actualiza de forma
+   * optimista al crear/editar desde aquí.
    * key = displayId de la fila de matriz (NO el assignmentId)
    */
-  type AsignacionCreadaMeta = {
-    id: string;
-    title: string;
-    dueAtISO: string;
-  };
   const [asignacionesCreadas, setAsignacionesCreadas] = React.useState<
     Map<number, AsignacionCreadaMeta>
-  >(new Map());
+  >(new Map(initialAsignacionesCreadas));
+
+  /** Local primero (optimista), luego lo que vino de la BD. */
+  const getAsignacionCreada = React.useCallback(
+    (displayId: number): AsignacionCreadaMeta | null => {
+      if (displayId < 1) return null;
+      const local = asignacionesCreadas.get(displayId);
+      if (local) return local;
+      return initialAsignacionesCreadas.get(displayId) ?? null;
+    },
+    [asignacionesCreadas, initialAsignacionesCreadas]
+  );
+
+  /** Nombre del supervisor a partir del correo con el que se creó la tarea. */
+  const getSupervisorNombre = React.useCallback(
+    (email: string | null | undefined): string | null => {
+      if (!email) return null;
+      const normalized = email.trim().toLowerCase();
+      if (!normalized) return null;
+      const found = supervisores.find(
+        (s) => (s.email ?? "").trim().toLowerCase() === normalized
+      );
+      return found?.displayName ?? email;
+    },
+    [supervisores]
+  );
 
   /**
-   * Pre-configuración POR FILA (antes de darle Check/crear asignación).
-   * Permite editar el TÍTULO y la FECHA LÍMITE antes de:
+   * Datos por fila (título de la asignación + fecha límite) que se usan al:
    *   1) seleccionar supervisor, 2) pulsar Check, o 3) pulsar "Reasignar marcadas".
-   * Si el usuario NO la configura, se usan defaults:
+   * Los fija el diálogo "Editar actividad" y también se derivan de la matriz
+   * cuando el usuario NO los ha configurado:
    *   - titulo = #id · actividad (o Actividad #id sin nombre)
    *   - fecha  = último día del mes en curso.
    * Esta asociación es state de cliente → sobrevive renders (mientras no F5).
    * Si pulsas Check, se materializa la asignación con estos valores.
-   * Si la fila ya tenía asignación creada (hay meta en asignacionesCreadas), al
-   * volver a Editar se abre la vía UPDATE real en BD (editarAsignacion).
    */
   type PreFila = { titulo: string; fechaISO: string };
   const [prePorFila, setPrePorFila] = React.useState<Map<number, PreFila>>(
@@ -221,41 +263,48 @@ export function ArchiveroMatrizList(props: Props) {
     [prePorFila, matrizOptions, safeRows]
   );
 
-  // ---- Formulario Editar Asignación (título + fecha vencimiento) ----
-  const [editarTitulo, setEditarTitulo] = React.useState<string>("");
+  // ---- Formulario EDITAR FILA (nombre de la actividad + fecha de entrega) ----
+  const [editarActividad, setEditarActividad] = React.useState<string>("");
   const [editarFecha, setEditarFecha] = React.useState<string>("");
   const [editarSubmitting, setEditarSubmitting] = React.useState<boolean>(false);
 
-  // ---- Formulario PRE-CONFIGURAR FILA (antes de crear asignación) ----
-  const [preTitulo, setPreTitulo] = React.useState<string>("");
-  const [preFecha, setPreFecha] = React.useState<string>("");
+  // ---- Eliminar actividad de una fila de la matriz ----
+  const [eliminando, setEliminando] = React.useState<boolean>(false);
+  const router = useRouter();
 
-  // Cuando se abre el dialog de cualquiera de los 2 formularios, inicializar inputs.
-  React.useEffect(() => {
-    if (!dialog) return;
-    if (dialog.kind === "editarAsignacion") {
-      setEditarTitulo(dialog.initialTitle);
-      setEditarFecha(dialog.initialDueAtISO.slice(0, 10));
-      setEditarSubmitting(false);
-      return;
-    }
-    if (dialog.kind === "preconfigurarFila") {
-      setPreTitulo(dialog.initialTitle);
-      setPreFecha(dialog.initialFechaISO.slice(0, 10));
-      return;
-    }
-  }, [dialog]);
+  // ---- Nueva actividad en la matriz (solo el nombre) ----
+  const [nuevaActividadNombre, setNuevaActividadNombre] =
+    React.useState<string>("");
+  const [creandoActividad, setCreandoActividad] = React.useState<boolean>(false);
+
+  // Cuando se abre el dialog de edición, inicializar inputs.
+  const abrirEditarFila = (params: {
+    displayId: number;
+    assignmentId: string | null;
+    actividad: string;
+    fechaISO: string;
+  }) => {
+    setEditarActividad(params.actividad);
+    setEditarFecha(params.fechaISO.slice(0, 10));
+    setDialog({
+      kind: "editarFila",
+      displayId: params.displayId,
+      assignmentId: params.assignmentId,
+      initialActividad: params.actividad,
+      initialFechaISO: params.fechaISO,
+    });
+  };
 
   async function handleSubmitEditar(e: React.FormEvent) {
     e.preventDefault();
-    if (!dialog || dialog.kind !== "editarAsignacion") return;
+    if (!dialog || dialog.kind !== "editarFila") return;
     if (editarSubmitting) return;
 
-    const t = editarTitulo.trim();
-    if (!t.length) {
+    const nombre = editarActividad.trim().replace(/\s+/g, " ");
+    if (!nombre.length) {
       sileo.error({
         title: "Nombre requerido",
-        description: "El nombre no puede quedar vacío.",
+        description: "El nombre de la actividad no puede quedar vacío.",
       });
       return;
     }
@@ -267,37 +316,69 @@ export function ArchiveroMatrizList(props: Props) {
       return;
     }
 
+    const displayId = dialog.displayId;
+    const assignmentId = dialog.assignmentId;
+    const fechaISO = `${editarFecha}T00:00:00.000Z`;
+
     setEditarSubmitting(true);
 
     try {
-      const r: UpdateAssignmentBasicsResult = await updateAssignmentBasics({
-        assignmentId: dialog.assignmentId,
-        nuevoTitulo: t,
-        nuevaFechaEntregaISO: `${editarFecha}T00:00:00.000Z`,
-      });
+      // 1) El nombre se guarda en la MATRIZ (catálogo del Archivero).
+      const m = await updateMatrizActividad({ displayId, actividad: nombre });
+      if (!m.ok) {
+        sileo.error({
+          title: "No se pudo guardar el nombre",
+          description: m.error,
+        });
+        return;
+      }
 
-      if (r.ok) {
-        // Actualizar cache local de asignaciones creadas
+      // 2) Si ya existe la asignación, se sincronizan título y fecha.
+      if (assignmentId) {
+        const r: UpdateAssignmentBasicsResult = await updateAssignmentBasics({
+          assignmentId,
+          nuevoTitulo: `#${displayId} · ${nombre}`,
+          nuevaFechaEntregaISO: fechaISO,
+        });
+
+        if (!r.ok) {
+          sileo.error({
+            title: "No se pudieron guardar los cambios",
+            description: r.error,
+          });
+          return;
+        }
+
+        const prevMeta = getAsignacionCreada(displayId);
         setAsignacionesCreadas((prev) => {
           const n = new Map(prev);
-          n.set(dialog.displayId, {
-            id: dialog.assignmentId,
+          n.set(displayId, {
+            id: assignmentId,
             title: r.title,
             dueAtISO: r.due_at,
+            status: prevMeta?.status ?? "pendiente",
+            supervisorEmail: prevMeta?.supervisorEmail ?? null,
           });
           return n;
         });
-        sileo.success({
-          title: "Cambios guardados",
-          description: "La asignación se actualizó correctamente.",
-        });
-        setDialog(null);
-      } else {
-        sileo.error({
-          title: "No se pudieron guardar los cambios",
-          description: r.error,
-        });
       }
+
+      // La pre-configuración queda alineada con lo recién guardado.
+      setPrePorFila((prev) => {
+        const n = new Map(prev);
+        n.set(displayId, {
+          titulo: `#${displayId} · ${nombre}`,
+          fechaISO,
+        });
+        return n;
+      });
+
+      sileo.success({
+        title: "Actividad actualizada",
+        description: `Fila #${displayId} · ${nombre}`,
+      });
+      setDialog(null);
+      router.refresh();
     } catch (err) {
       sileo.error({
         title: "Error al guardar",
@@ -309,40 +390,108 @@ export function ArchiveroMatrizList(props: Props) {
     }
   }
 
-  function handleSubmitPreconfigurar(e: React.FormEvent) {
+  /**
+   * Crea la actividad en la MATRIZ: sólo se guarda el nombre.
+   * No se pide supervisor ni fecha y no se crea nada en Task/asignaciones.
+   * El supervisor y la fecha de expiración se ponen después, ya en la fila.
+   */
+  async function handleSubmitNuevaActividad(e: React.FormEvent) {
     e.preventDefault();
-    if (!dialog || dialog.kind !== "preconfigurarFila") return;
+    if (creandoActividad) return;
 
-    const t = preTitulo.trim();
-    if (!t.length) {
+    const nombre = nuevaActividadNombre.trim().replace(/\s+/g, " ");
+    if (!nombre) {
       sileo.error({
-        title: "Nombre requerido",
-        description: "El nombre no puede quedar vacío.",
-      });
-      return;
-    }
-    if (!preFecha) {
-      sileo.error({
-        title: "Fecha requerida",
-        description: "Selecciona fecha de entrega.",
+        title: "Falta el nombre",
+        description: "Escribe el nombre de la actividad.",
       });
       return;
     }
 
-    setPrePorFila((prev) => {
-      const n = new Map(prev);
-      n.set(dialog.displayId, {
-        titulo: t,
-        fechaISO: `${preFecha}T00:00:00.000Z`,
-      });
-      return n;
-    });
+    setCreandoActividad(true);
+    try {
+      const r = await createMatrizActividad({ actividad: nombre });
+      if (!r.ok) {
+        sileo.error({
+          title: "No se pudo crear la actividad",
+          description: r.error,
+        });
+        return;
+      }
 
-    sileo.success({
-      title: "Fila pre-configurada",
-      description: "Se usará al crear la asignación.",
-    });
-    setDialog(null);
+      sileo.success({
+        title: "Actividad creada en la matriz",
+        description: `Fila #${r.id} · ${nombre}`,
+      });
+      setNuevaActividadNombre("");
+      setDialog(null);
+      router.refresh();
+    } catch (err) {
+      sileo.error({
+        title: "Error al crear",
+        description:
+          err instanceof Error ? err.message : "Error desconocido al crear.",
+      });
+    } finally {
+      setCreandoActividad(false);
+    }
+  }
+
+  async function handleConfirmarEliminar() {
+    if (!dialog || dialog.kind !== "confirmarEliminarFila") return;
+    if (eliminando) return;
+
+    const displayId = dialog.displayId;
+    setEliminando(true);
+
+    try {
+      const r = await deleteMatrizActividad({ displayId });
+      if (!r.ok) {
+        sileo.error({
+          title: "No se pudo eliminar la actividad",
+          description: r.error,
+        });
+        return;
+      }
+
+      // Limpiar estado local de la fila para que no quede residuo.
+      setChecked((prev) => {
+        if (!prev.has(displayId)) return prev;
+        const n = new Set(prev);
+        n.delete(displayId);
+        return n;
+      });
+      setPrePorFila((prev) => {
+        if (!prev.has(displayId)) return prev;
+        const n = new Map(prev);
+        n.delete(displayId);
+        return n;
+      });
+      setAsignacionesCreadas((prev) => {
+        if (!prev.has(displayId)) return prev;
+        const n = new Map(prev);
+        n.delete(displayId);
+        return n;
+      });
+
+      sileo.success({
+        title: "Actividad eliminada",
+        description:
+          r.asignacionesEliminadas > 0
+            ? `Se eliminó la fila #${displayId}, la asignación creada y sus evidencias.`
+            : `La fila #${displayId} quedó vacía.`,
+      });
+      setDialog(null);
+      router.refresh();
+    } catch (err) {
+      sileo.error({
+        title: "Error al eliminar",
+        description:
+          err instanceof Error ? err.message : "Error desconocido al eliminar.",
+      });
+    } finally {
+      setEliminando(false);
+    }
   }
 
   const definidasIds = React.useMemo(
@@ -397,8 +546,12 @@ export function ArchiveroMatrizList(props: Props) {
   function abrirSeleccionarSupervisor(displayId: number) {
     setDialog({ kind: "seleccionarSupervisor", displayId });
   }
-  function abrirNuevaAsignacionFueraDeMatriz() {
-    setDialog({ kind: "nuevaAsignacionFueraDeMatriz" });
+  function abrirCrearAsignacionFila(displayId: number) {
+    setDialog({ kind: "crearAsignacionFila", displayId });
+  }
+  function abrirNuevaActividad() {
+    setNuevaActividadNombre("");
+    setDialog({ kind: "nuevaActividad" });
   }
   function abrirReasignarMasivo() {
     if (actividadesSeleccionadas.length === 0) return;
@@ -507,8 +660,32 @@ export function ArchiveroMatrizList(props: Props) {
     void persistirSupervisor(displayId, null, current);
   }
 
-  function handleMasivoCreated() {
+  async function handleQuickCreated(result: {
+    ok: true;
+    ids: string[];
+    count: number;
+    displayIds: number[];
+    supervisors: SupervisorOption[];
+    assigningToAll: boolean;
+  }) {
+    if (
+      result.displayIds.length === 1 &&
+      result.supervisors.length === 1 &&
+      !result.assigningToAll
+    ) {
+      const displayId = result.displayIds[0]!;
+      const supervisor = result.supervisors[0]!;
+      const current = supervisorDeFila(displayId);
+      if (
+        !current ||
+        (current.userId ?? current.id) !== (supervisor.userId ?? supervisor.id)
+      ) {
+        await persistirSupervisor(displayId, supervisor, current);
+      }
+    }
     setChecked(new Set());
+    setDialog(null);
+    router.refresh();
   }
 
   /**
@@ -518,7 +695,7 @@ export function ArchiveroMatrizList(props: Props) {
   async function tryCrearAsignacionIndividual(displayId: number) {
     const supervisor = supervisorDeFila(displayId);
     if (!supervisor?.email) {
-      abrirSeleccionarSupervisor(displayId);
+      abrirCrearAsignacionFila(displayId);
       return;
     }
 
@@ -540,6 +717,7 @@ export function ArchiveroMatrizList(props: Props) {
         prioridad: "medio",
         status: "pendiente",
         attachmentFiles: [],
+        matrizFilaId: displayId,
       });
 
       if (r.ok) {
@@ -549,6 +727,8 @@ export function ArchiveroMatrizList(props: Props) {
             id: r.id,
             title: titulo,
             dueAtISO: fechaISO,
+            status: "pendiente",
+            supervisorEmail: supervisor.email,
           });
           return n;
         });
@@ -556,6 +736,7 @@ export function ArchiveroMatrizList(props: Props) {
           title: "Asignación creada",
           description: `Fila #${displayId} · ${titulo}`,
         });
+        router.refresh();
       } else {
         sileo.error({
           title: "No se pudo crear la asignación",
@@ -577,10 +758,10 @@ export function ArchiveroMatrizList(props: Props) {
   }
 
   const modoMultiActivo = dialog?.kind === "reasignarMasivo";
-  const modoNuevaActivo = dialog?.kind === "nuevaAsignacionFueraDeMatriz";
   const modoSelActivo = dialog?.kind === "seleccionarSupervisor";
+  const modoCrearFilaActivo = dialog?.kind === "crearAsignacionFila";
 
-  let modalMode: ModalMode = { kind: "nueva" };
+  let modalMode: ModalMode = { kind: "multiples", actividades: [] };
   let selectionOnly: { displayId: number } | undefined = undefined;
 
   if (modoSelActivo) {
@@ -593,13 +774,20 @@ export function ArchiveroMatrizList(props: Props) {
       })();
     modalMode = { kind: "fila", actividad };
     selectionOnly = { displayId };
-  } else if (modoNuevaActivo) {
-    modalMode = { kind: "nueva" };
+  } else if (modoCrearFilaActivo) {
+    const displayId = dialog.displayId;
+    const actividad =
+      matrizOptions.find((m) => m.id === displayId) ??
+      (() => {
+        const r = safeRows.find((rr) => rr.displayId === displayId);
+        return { id: displayId, actividad: r?.actividad ?? "" };
+      })();
+    modalMode = { kind: "fila", actividad };
   } else if (modoMultiActivo) {
     modalMode = { kind: "multiples", actividades: actividadesSeleccionadas };
   }
 
-  const modalOpen = modoSelActivo || modoNuevaActivo || modoMultiActivo;
+  const modalOpen = modoSelActivo || modoMultiActivo || modoCrearFilaActivo;
 
   return (
     <>
@@ -701,9 +889,9 @@ export function ArchiveroMatrizList(props: Props) {
             </button>
             <button
               type="button"
-              onClick={abrirNuevaAsignacionFueraDeMatriz}
+              onClick={abrirNuevaActividad}
               className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md bg-zinc-900 px-3 text-xs font-medium text-white hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-950 dark:hover:bg-zinc-200"
-              title="Nueva asignación fuera de la matriz"
+              title="Agregar una actividad nueva al catálogo de la matriz (solo el nombre)"
             >
               <svg
                 viewBox="0 0 24 24"
@@ -719,7 +907,7 @@ export function ArchiveroMatrizList(props: Props) {
                   strokeLinejoin="round"
                 />
               </svg>
-              Nueva asignación
+              Nueva actividad
             </button>
           </div>
         </div>
@@ -762,6 +950,11 @@ export function ArchiveroMatrizList(props: Props) {
               const sup = supervisorDeFila(r.displayId);
               const creando = creatingIds.has(r.displayId);
               const supSaving = savingSupervisors.has(r.displayId);
+              const asigCreada =
+                r.actividad.length > 0 ? getAsignacionCreada(r.displayId) : null;
+              const asigSupervisorNombre = asigCreada
+                ? getSupervisorNombre(asigCreada.supervisorEmail)
+                : null;
 
               return (
                 <div
@@ -790,19 +983,68 @@ export function ArchiveroMatrizList(props: Props) {
                     </span>
                   </div>
 
-                  <div
-                    className="col-span-7 truncate font-medium leading-snug text-zinc-950 dark:text-zinc-50"
-                    title={
-                      r.actividad
-                        ? r.actividad + "\n\nCreada: " + createdLabel
-                        : "Creada: " + createdLabel
-                    }
-                  >
-                    {r.actividad.length > 0 ? r.actividad : "—"}
-                    {r.frecuencia.length > 0 ? (
-                      <span className="ml-2 inline-flex items-center rounded-md border border-zinc-200 bg-white px-2 py-0.5 text-[10px] font-medium text-zinc-500 dark:border-zinc-800 dark:bg-black dark:text-zinc-400">
-                        {r.frecuencia}
-                      </span>
+                  <div className="col-span-7 min-w-0">
+                    <div
+                      className="truncate font-medium leading-snug text-zinc-950 dark:text-zinc-50"
+                      title={
+                        r.actividad
+                          ? r.actividad + "\n\nCreada: " + createdLabel
+                          : "Creada: " + createdLabel
+                      }
+                    >
+                      {r.actividad.length > 0 ? r.actividad : "—"}
+                      {r.frecuencia.length > 0 ? (
+                        <span className="ml-2 inline-flex items-center rounded-md border border-zinc-200 bg-white px-2 py-0.5 text-[10px] font-medium text-zinc-500 dark:border-zinc-800 dark:bg-black dark:text-zinc-400">
+                          {r.frecuencia}
+                        </span>
+                      ) : null}
+                    </div>
+
+                    {asigCreada ? (
+                      <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] text-zinc-500 dark:text-zinc-400">
+                        <span className="inline-flex items-center gap-1 rounded-md border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 font-medium text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-400">
+                          <svg
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            aria-hidden="true"
+                            className="h-2.5 w-2.5"
+                          >
+                            <path
+                              d="M5 12l5 5L20 7"
+                              stroke="currentColor"
+                              strokeWidth="3"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                            />
+                          </svg>
+                          Ya creada
+                        </span>
+                        <span
+                          className="max-w-[20rem] truncate"
+                          title={asigCreada.title}
+                        >
+                          {asigCreada.title}
+                        </span>
+                        <span className="text-zinc-300 dark:text-zinc-700">
+                          ·
+                        </span>
+                        <span className="tabular-nums">
+                          {formatCalendarDateShort(asigCreada.dueAtISO)}
+                        </span>
+                        {asigSupervisorNombre ? (
+                          <>
+                            <span className="text-zinc-300 dark:text-zinc-700">
+                              ·
+                            </span>
+                            <span
+                              className="max-w-[14rem] truncate"
+                              title={asigCreada.supervisorEmail ?? undefined}
+                            >
+                              {asigSupervisorNombre}
+                            </span>
+                          </>
+                        ) : null}
+                      </div>
                     ) : null}
                   </div>
 
@@ -904,12 +1146,12 @@ export function ArchiveroMatrizList(props: Props) {
                     ) : (
                       <button
                         type="button"
-                        onClick={() => abrirSeleccionarSupervisor(r.displayId)}
+                        onClick={() => abrirCrearAsignacionFila(r.displayId)}
                         className={
                           "inline-flex h-8 w-full items-center justify-center gap-1 rounded-md border-dashed bg-white text-[11px] font-medium transition-colors " +
                           "border border-zinc-300 text-zinc-500 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-900"
                         }
-                        title="Seleccionar supervisor para esta actividad — quedará asignado permanentemente hasta que tú lo cambies"
+                        title="Crear una tarea desde esta fila y elegir un supervisor específico o todos los supervisores"
                       >
                         {supSaving ? (
                           <svg
@@ -1004,35 +1246,34 @@ export function ArchiveroMatrizList(props: Props) {
                     <button
                       type="button"
                       onClick={() => {
-                        const meta = asignacionesCreadas.get(r.displayId);
+                        const meta = getAsignacionCreada(r.displayId);
                         if (meta?.id) {
-                          // Vía UPDATE real en BD (asignación existente).
-                          setDialog({
-                            kind: "editarAsignacion",
+                          // Ya existe la asignación: también se sincroniza su
+                          // título y fecha además del nombre en la matriz.
+                          abrirEditarFila({
                             displayId: r.displayId,
                             assignmentId: meta.id,
-                            initialTitle: meta.title,
-                            initialDueAtISO: meta.dueAtISO,
+                            actividad: r.actividad,
+                            fechaISO: meta.dueAtISO,
                           });
                           return;
                         }
 
-                        // Vía state cliente (antes de crear la asignación).
-                        // Se usa al pulsar luego Check o Reasignar marcadas.
-                        const pre = getPreOrDefault(r.displayId);
-                        setDialog({
-                          kind: "preconfigurarFila",
+                        // Todavía sin asignación: se edita el nombre en la
+                        // matriz y la fecha que se usará al crearla.
+                        abrirEditarFila({
                           displayId: r.displayId,
-                          initialTitle: pre.titulo,
-                          initialFechaISO: pre.fechaISO,
+                          assignmentId: null,
+                          actividad: r.actividad,
+                          fechaISO: getPreOrDefault(r.displayId).fechaISO,
                         });
                       }}
                       className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-100 dark:border-zinc-800 dark:bg-black dark:text-zinc-300 dark:hover:bg-zinc-900"
-                      aria-label="Editar nombre y fecha de entrega"
+                      aria-label="Editar actividad"
                       title={
-                        asignacionesCreadas.get(r.displayId)?.id
-                          ? "Editar la asignación ya creada (UPDATE en BD)"
-                          : "Pre-configurar nombre y fecha de entrega (antes de crear la asignación). Se usará luego al darle Check ✓."
+                        getAsignacionCreada(r.displayId)?.id
+                          ? "Editar la actividad: nombre en la matriz, título y fecha de la asignación creada"
+                          : "Editar la actividad: nombre en la matriz y fecha de entrega"
                       }
                     >
                       <svg
@@ -1057,6 +1298,60 @@ export function ArchiveroMatrizList(props: Props) {
                         />
                       </svg>
                     </button>
+
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setDialog({
+                          kind: "confirmarEliminarFila",
+                          displayId: r.displayId,
+                          actividad: r.actividad,
+                        })
+                      }
+                      disabled={r.actividad.length === 0}
+                      className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-zinc-200 bg-white text-zinc-700 transition-colors hover:border-red-200 hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:border-zinc-200 disabled:bg-white disabled:text-zinc-300 dark:border-zinc-800 dark:bg-black dark:text-zinc-300 dark:hover:border-red-900 dark:hover:bg-red-950/40 dark:hover:text-red-400 dark:disabled:border-zinc-800 dark:disabled:bg-black dark:disabled:text-zinc-700"
+                      aria-label="Eliminar actividad de la fila"
+                      title={
+                        r.actividad.length === 0
+                          ? "La fila ya está vacía"
+                          : `Eliminar la actividad de la fila #${r.displayId} (deja la fila vacía)`
+                      }
+                    >
+                      <svg
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        xmlns="http://www.w3.org/2000/svg"
+                        aria-hidden="true"
+                        className="h-4 w-4"
+                      >
+                        <path
+                          d="M4 7h16"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                        />
+                        <path
+                          d="M10 11v6M14 11v6"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                        />
+                        <path
+                          d="M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                        <path
+                          d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      </svg>
+                    </button>
                   </div>
                 </div>
               );
@@ -1074,18 +1369,114 @@ export function ArchiveroMatrizList(props: Props) {
           mode={modalMode}
           matrizOptions={matrizOptions}
           supervisores={supervisores}
-          onCreated={modoMultiActivo ? handleMasivoCreated : undefined}
+          onCreated={
+            modoMultiActivo || modoCrearFilaActivo ? handleQuickCreated : undefined
+          }
           selectionOnly={selectionOnly}
           onSupervisorSelected={onSupervisorSelected}
         />
       ) : null}
 
-      {dialog && dialog.kind === "editarAsignacion" ? (
+      {dialog && dialog.kind === "nuevaActividad" ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-950/40 p-4 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="nueva-actividad-title"
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !creandoActividad) cerrarDialogo();
+          }}
+        >
+          <form
+            onSubmit={handleSubmitNuevaActividad}
+            className="w-full max-w-md overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-2xl outline-none dark:border-zinc-800 dark:bg-zinc-950"
+          >
+            <div className="border-b border-zinc-100 px-5 py-3.5 dark:border-zinc-900">
+              <h2
+                id="nueva-actividad-title"
+                className="text-sm font-semibold text-zinc-900 dark:text-zinc-100"
+              >
+                Nueva actividad
+              </h2>
+              <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                Se agrega al catálogo de la matriz. Solo requiere el nombre: el
+                supervisor y la fecha de expiración se asignan después, desde la
+                fila.
+              </p>
+            </div>
+
+            <div className="px-5 py-4">
+              <label
+                htmlFor="nueva-actividad-nombre"
+                className="block text-xs font-medium text-zinc-700 dark:text-zinc-300"
+              >
+                Nombre de la actividad
+              </label>
+              <input
+                id="nueva-actividad-nombre"
+                type="text"
+                autoFocus
+                required
+                value={nuevaActividadNombre}
+                onChange={(e) => setNuevaActividadNombre(e.target.value)}
+                placeholder="Ej: Revisión de extintores"
+                className="mt-1 h-9 w-full rounded-md border border-zinc-200 bg-white px-3 text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-400 focus:outline-none focus:ring-2 focus:ring-zinc-200 dark:border-zinc-800 dark:bg-black dark:text-zinc-100 dark:placeholder:text-zinc-600"
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-2 border-t border-zinc-100 px-5 py-3 dark:border-zinc-900">
+              <button
+                type="button"
+                onClick={cerrarDialogo}
+                disabled={creandoActividad}
+                className="inline-flex h-9 items-center justify-center rounded-md border border-zinc-200 bg-white px-3 text-xs font-medium text-zinc-700 hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-200 dark:hover:bg-zinc-900"
+              >
+                Cancelar
+              </button>
+              <button
+                type="submit"
+                disabled={creandoActividad}
+                className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md bg-zinc-900 px-3.5 text-xs font-medium text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-zinc-50 dark:text-zinc-950 dark:hover:bg-zinc-200"
+              >
+                {creandoActividad ? (
+                  <>
+                    <svg
+                      className="h-3.5 w-3.5 animate-spin"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      aria-hidden="true"
+                    >
+                      <circle
+                        className="opacity-25"
+                        cx="12"
+                        cy="12"
+                        r="10"
+                        stroke="currentColor"
+                        strokeWidth="4"
+                      />
+                      <path
+                        className="opacity-75"
+                        fill="currentColor"
+                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+                      />
+                    </svg>
+                    Agregando…
+                  </>
+                ) : (
+                  "Agregar a la matriz"
+                )}
+              </button>
+            </div>
+          </form>
+        </div>
+      ) : null}
+
+      {dialog && dialog.kind === "editarFila" ? (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-950/40 backdrop-blur-sm p-4"
           role="dialog"
           aria-modal="true"
-          aria-labelledby="editar-asignacion-title"
+          aria-labelledby="editar-actividad-title"
           onClick={(e) => {
             if (e.target === e.currentTarget) cerrarDialogo();
           }}
@@ -1097,14 +1488,16 @@ export function ArchiveroMatrizList(props: Props) {
             <div className="flex items-start justify-between border-b border-zinc-100 px-5 py-3.5 dark:border-zinc-900">
               <div>
                 <h2
-                  id="editar-asignacion-title"
+                  id="editar-actividad-title"
                   className="text-sm font-semibold text-zinc-900 dark:text-zinc-100"
                 >
-                  Editar asignación
+                  Editar actividad
                 </h2>
                 <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-                  Fila #{dialog.displayId}. Modifica el nombre y la fecha de
-                  entrega de la asignación ya creada.
+                  Fila #{dialog.displayId}.{" "}
+                  {dialog.assignmentId
+                    ? "El nombre se guarda en la matriz y se sincroniza el título y la fecha de la asignación creada."
+                    : "El nombre se guarda en la matriz; la fecha se usará al crear la asignación."}
                 </p>
               </div>
               <button
@@ -1133,15 +1526,15 @@ export function ArchiveroMatrizList(props: Props) {
             <div className="space-y-4 px-5 py-4">
               <div>
                 <label className="mb-1.5 block text-xs font-medium text-zinc-700 dark:text-zinc-300">
-                  Nombre de la asignación
+                  Nombre de la actividad
                 </label>
                 <input
                   type="text"
                   autoFocus
-                  value={editarTitulo}
-                  onChange={(e) => setEditarTitulo(e.target.value)}
+                  value={editarActividad}
+                  onChange={(e) => setEditarActividad(e.target.value)}
                   className="block w-full rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-900 outline-none placeholder:text-zinc-400 focus:border-zinc-400 focus:ring-1 focus:ring-zinc-300 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-100 dark:placeholder:text-zinc-600 dark:focus:border-zinc-600"
-                  placeholder="#1 · Revisar facturas…"
+                  placeholder="Revisar facturas…"
                 />
               </div>
 
@@ -1179,81 +1572,34 @@ export function ArchiveroMatrizList(props: Props) {
         </div>
       ) : null}
 
-      {dialog && dialog.kind === "preconfigurarFila" ? (
+      {dialog && dialog.kind === "confirmarEliminarFila" ? (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-950/40 backdrop-blur-sm p-4"
           role="dialog"
           aria-modal="true"
-          aria-labelledby="preconfigurar-fila-title"
+          aria-labelledby="eliminar-fila-title"
           onClick={(e) => {
-            if (e.target === e.currentTarget) cerrarDialogo();
+            if (e.target === e.currentTarget && !eliminando) cerrarDialogo();
           }}
         >
-          <form
-            onSubmit={handleSubmitPreconfigurar}
-            className="w-full max-w-md overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-2xl outline-none dark:border-zinc-800 dark:bg-zinc-950"
-          >
-            <div className="flex items-start justify-between border-b border-zinc-100 px-5 py-3.5 dark:border-zinc-900">
-              <div>
-                <h2
-                  id="preconfigurar-fila-title"
-                  className="text-sm font-semibold text-zinc-900 dark:text-zinc-100"
-                >
-                  Pre-configurar fila #{dialog.displayId}
-                </h2>
-                <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-                  Edita nombre y fecha antes de crear la asignación. Luego al
-                  darle Check ✓ o reasignar en lote se usan estos valores.
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={cerrarDialogo}
-                className="inline-flex h-8 w-8 items-center justify-center rounded-md text-zinc-500 hover:bg-zinc-100 hover:text-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-900 dark:hover:text-zinc-200"
-                aria-label="Cerrar"
+          <div className="w-full max-w-md overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-2xl outline-none dark:border-zinc-800 dark:bg-zinc-950">
+            <div className="border-b border-zinc-100 px-5 py-3.5 dark:border-zinc-900">
+              <h2
+                id="eliminar-fila-title"
+                className="text-sm font-semibold text-zinc-900 dark:text-zinc-100"
               >
-                <svg
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  xmlns="http://www.w3.org/2000/svg"
-                  aria-hidden="true"
-                  className="h-4 w-4"
-                >
-                  <path
-                    d="M6 6l12 12M18 6L6 18"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                  />
-                </svg>
-              </button>
+                Eliminar actividad
+              </h2>
+              <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                Se eliminará la fila #{dialog.displayId} de la matriz y, si ya
+                tenía asignación creada, también la tarea del supervisor junto
+                con sus evidencias. Esta acción no se puede deshacer.
+              </p>
             </div>
 
-            <div className="space-y-4 px-5 py-4">
-              <div>
-                <label className="mb-1.5 block text-xs font-medium text-zinc-700 dark:text-zinc-300">
-                  Nombre (título de la asignación)
-                </label>
-                <input
-                  type="text"
-                  autoFocus
-                  value={preTitulo}
-                  onChange={(e) => setPreTitulo(e.target.value)}
-                  className="block w-full rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-900 outline-none placeholder:text-zinc-400 focus:border-zinc-400 focus:ring-1 focus:ring-zinc-300 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-100 dark:placeholder:text-zinc-600 dark:focus:border-zinc-600"
-                  placeholder="#1 · Revisar facturas…"
-                />
-              </div>
-
-              <div>
-                <label className="mb-1.5 block text-xs font-medium text-zinc-700 dark:text-zinc-300">
-                  Fecha límite de entrega
-                </label>
-                <input
-                  type="date"
-                  value={preFecha}
-                  onChange={(e) => setPreFecha(e.target.value)}
-                  className="block w-full rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-900 outline-none placeholder:text-zinc-400 focus:border-zinc-400 focus:ring-1 focus:ring-zinc-300 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-100 dark:placeholder:text-zinc-600 dark:focus:border-zinc-600"
-                />
+            <div className="px-5 py-4">
+              <div className="rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-700 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-200">
+                {dialog.actividad.length > 0 ? dialog.actividad : "—"}
               </div>
             </div>
 
@@ -1261,18 +1607,47 @@ export function ArchiveroMatrizList(props: Props) {
               <button
                 type="button"
                 onClick={cerrarDialogo}
-                className="inline-flex h-9 items-center justify-center rounded-md border border-zinc-200 bg-white px-3 text-xs font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-200 dark:hover:bg-zinc-900"
+                disabled={eliminando}
+                className="inline-flex h-9 items-center justify-center rounded-md border border-zinc-200 bg-white px-3 text-xs font-medium text-zinc-700 hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-200 dark:hover:bg-zinc-900"
               >
                 Cancelar
               </button>
               <button
-                type="submit"
-                className="inline-flex h-9 items-center justify-center rounded-md bg-zinc-900 px-3.5 text-xs font-medium text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-200"
+                type="button"
+                onClick={handleConfirmarEliminar}
+                disabled={eliminando}
+                className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md bg-red-600 px-3.5 text-xs font-medium text-white hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                Guardar
+                {eliminando ? (
+                  <>
+                    <svg
+                      className="h-3.5 w-3.5 animate-spin"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      aria-hidden="true"
+                    >
+                      <circle
+                        className="opacity-25"
+                        cx="12"
+                        cy="12"
+                        r="10"
+                        stroke="currentColor"
+                        strokeWidth="4"
+                      />
+                      <path
+                        className="opacity-75"
+                        fill="currentColor"
+                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+                      />
+                    </svg>
+                    Eliminando…
+                  </>
+                ) : (
+                  "Eliminar"
+                )}
               </button>
             </div>
-          </form>
+          </div>
         </div>
       ) : null}
     </>

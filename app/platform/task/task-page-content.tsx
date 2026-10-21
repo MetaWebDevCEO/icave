@@ -1,6 +1,7 @@
 import { PlatformShell } from "@/app/platform/platform-shell";
 import type { SidebarSection } from "@/app/platform/components/sidebar";
 import { TaskBoard, type TaskRow } from "@/app/platform/task/task-board";
+import type { UpdateAssignmentResult } from "@/app/platform/task/update-assignment";
 import type { UserRole } from "@/lib/platform-roles";
 import type { PostgrestError } from "@supabase/supabase-js";
 
@@ -26,6 +27,7 @@ type Props = {
   onDelete: (formData: FormData) => Promise<void>;
   onDeleteEvidence?: (formData: FormData) => Promise<void>;
   onMarkCompleted?: (formData: FormData) => Promise<void>;
+  onUpdateAssignment?: (formData: FormData) => Promise<UpdateAssignmentResult>;
 };
 
 export function TaskPageContent({
@@ -48,6 +50,7 @@ export function TaskPageContent({
   onDelete,
   onDeleteEvidence,
   onMarkCompleted,
+  onUpdateAssignment,
 }: Props) {
   const clearLink = `${basePath}?status=all&priority=all`;
 
@@ -190,6 +193,7 @@ export function TaskPageContent({
             onDelete={onDelete}
             onDeleteEvidence={onDeleteEvidence}
             onMarkCompleted={onMarkCompleted}
+            onUpdateAssignment={onUpdateAssignment}
           />
         )}
       </div>

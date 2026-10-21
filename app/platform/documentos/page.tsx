@@ -22,6 +22,7 @@ import {
 import {
   ArchiveroMatrizList,
   type FilaMatriz,
+  type AsignacionCreadaMeta,
 } from "./archivero-matriz-list";
 
 type MatrizRow = {
@@ -34,6 +35,12 @@ type MatrizRow = {
 
 const SELECT_MATRIX_EXTENDED = "id, created_at, actividad, frecuencia";
 const SELECT_MATRIX_BASE = "id, actividad, frecuencia";
+
+/**
+ * Filas base del catálogo. Las actividades creadas desde el Archivero se
+ * agregan con id mayor a este número y también se listan.
+ */
+const BASE_MATRIZ_ROWS = 64;
 
 const DEFAULT_AVATAR_BUCKET = "avatars";
 const AVATAR_EXPIRES_SECONDS = 60 * 60;
@@ -132,7 +139,7 @@ export default async function ArchiveroPage() {
       const n = Number(rawId.trim());
       if (Number.isFinite(n)) numericId = Math.round(n);
     }
-    if (numericId === null || numericId < 1 || numericId > 64) continue;
+    if (numericId === null || numericId < 1) continue;
     const actividadRaw = r.actividad;
     const frecuenciaRaw = r.frecuencia;
     const actividad = typeof actividadRaw === "string" ? actividadRaw.trim() : "";
@@ -155,7 +162,16 @@ export default async function ArchiveroPage() {
 
   const safeRows: FilaMatriz[] = [];
   const matrizOptions: MatrizOpt[] = [];
-  for (let i = 1; i <= 64; i++) {
+  // Filas base del catálogo (1..64) + actividades nuevas agregadas después
+  // (id > 64), en orden ascendente.
+  const filasExtra = [...byId.keys()]
+    .filter((n) => n > BASE_MATRIZ_ROWS)
+    .sort((a, b) => a - b);
+  const ordenFilas = [
+    ...Array.from({ length: BASE_MATRIZ_ROWS }, (_, k) => k + 1),
+    ...filasExtra,
+  ];
+  for (const i of ordenFilas) {
     const row = byId.get(i);
     const actividad = row?.actividad ?? "";
     safeRows.push({
@@ -336,6 +352,92 @@ export default async function ArchiveroPage() {
         })()
       : new Map<number, SupervisorOption>();
 
+  // ------------------------------------------------------------------
+  // Asignaciones ya creadas por fila de matriz: para que el Archivero
+  // muestre "Ya creada" + título + fecha + supervisor aunque se recargue.
+  // Se detectan por el marcador `[Matriz] #N` que escribe createAssignment,
+  // con respaldo en el título para las creadas antes de ese marcador.
+  // Si una fila tiene varias, se conserva la más reciente.
+  // ------------------------------------------------------------------
+  type AsignacionRow = {
+    id?: unknown;
+    title?: unknown;
+    due_at?: unknown;
+    status?: unknown;
+    assigned_to_email?: unknown;
+    description?: unknown;
+  };
+
+  const initialAsignacionesCreadas: Map<number, AsignacionCreadaMeta> = admin
+    ? await (async () => {
+        try {
+          const q = await admin
+            .from("asignaciones")
+            .select(
+              "id, title, due_at, status, assigned_to_email, description, created_at"
+            )
+            .ilike("description", "%[Tarea creada por revisor]%")
+            .order("created_at", { ascending: false })
+            .limit(1000);
+          if (q.error) return new Map<number, AsignacionCreadaMeta>();
+
+          const map = new Map<number, AsignacionCreadaMeta>();
+          for (const row of (q.data ?? []) as AsignacionRow[]) {
+            const description =
+              typeof row.description === "string" ? row.description : "";
+            const title = typeof row.title === "string" ? row.title : "";
+
+            let filaNum: number | null = null;
+            const marcador = /\[matriz\]\s*#\s*(\d+)/i.exec(description);
+            if (marcador) {
+              filaNum = Number(marcador[1]);
+            } else {
+              const porTitulo = /^\s*(?:Actividad\s*#|#)\s*(\d+)\s*(?:·|$)/i.exec(
+                title
+              );
+              if (porTitulo) filaNum = Number(porTitulo[1]);
+            }
+            if (
+              filaNum === null ||
+              !Number.isInteger(filaNum) ||
+              filaNum < 1
+            ) {
+              continue;
+            }
+            // Ya ordenado por created_at desc → la primera es la más reciente.
+            if (map.has(filaNum)) continue;
+
+            const id =
+              typeof row.id === "string"
+                ? row.id
+                : row.id != null
+                  ? String(row.id)
+                  : "";
+            if (!id) continue;
+
+            const dueRaw = typeof row.due_at === "string" ? row.due_at : "";
+            map.set(filaNum, {
+              id,
+              title: title || `Actividad #${filaNum}`,
+              dueAtISO: dueRaw
+                ? dueRaw.includes("T")
+                  ? dueRaw
+                  : `${dueRaw}T00:00:00.000Z`
+                : "",
+              status: typeof row.status === "string" ? row.status : null,
+              supervisorEmail:
+                typeof row.assigned_to_email === "string"
+                  ? row.assigned_to_email
+                  : null,
+            });
+          }
+          return map;
+        } catch {
+          return new Map<number, AsignacionCreadaMeta>();
+        }
+      })()
+    : new Map<number, AsignacionCreadaMeta>();
+
   return (
     <PlatformShell
       sections={sections}
@@ -383,6 +485,7 @@ export default async function ArchiveroPage() {
             vacias={vacias}
             total={total}
             initialSupervisoresAsignados={initialSupervisoresAsignados}
+            initialAsignacionesCreadas={initialAsignacionesCreadas}
           />
         </div>
       </div>

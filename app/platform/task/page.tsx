@@ -3,6 +3,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import type { TaskRow } from "@/app/platform/task/task-board";
 import { TaskPageContent } from "@/app/platform/task/task-page-content";
+import { updateAssignment } from "@/app/platform/task/update-assignment";
 import {
   createClient as createSupabaseAdminClient,
   type PostgrestError,
@@ -555,28 +556,28 @@ async function saveComment(formData: FormData) {
 
   const verifyA = await supabase
     .from("asignaciones")
-    .select("id, revisor_id")
+    .select("id")
     .eq("id", assignmentId)
     .maybeSingle();
 
-  let row = verifyA.data as { revisor_id?: string | null } | null;
+  let row = verifyA.data as { id?: string | null } | null;
   let rowError = verifyA.error;
 
   if ((!row || rowError) && admin) {
     const verifyB = await admin
       .from("asignaciones")
-      .select("id, revisor_id")
+      .select("id")
       .eq("id", assignmentId)
       .maybeSingle();
-    row = verifyB.data as { revisor_id?: string | null } | null;
+    row = verifyB.data as { id?: string | null } | null;
     rowError = verifyB.error;
   }
 
   if (rowError) {
     redirect("/platform/task?error=" + encodeURIComponent(rowError.message));
   }
-  if (!row || row.revisor_id !== user.id) {
-    redirect("/platform/task?error=" + encodeURIComponent("Solo puedes comentar tus asignaciones."));
+  if (!row) {
+    redirect("/platform/task?error=" + encodeURIComponent("La asignación no existe."));
   }
 
   const payload: Record<string, unknown> = {
@@ -1216,6 +1217,7 @@ export default async function TaskPage({
       onDelete={deleteAssignment}
       onDeleteEvidence={deleteEvidenceFile}
       onMarkCompleted={role === "revisor" ? markCompleted : undefined}
+      onUpdateAssignment={role === "revisor" ? updateAssignment : undefined}
     />
   );
 }

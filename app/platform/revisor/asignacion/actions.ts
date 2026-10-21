@@ -30,6 +30,12 @@ export type CreateAssignmentInput = {
   prioridad: "alto" | "medio" | "bajo";
   status: string;
   attachmentFiles?: AttachmentFileInput[];
+  /**
+   * Fila de la Matriz de Control (1..64) desde la que se creó la asignación.
+   * Se guarda como `[Matriz] #N` en la descripción para que el Archivero
+   * pueda mostrar qué filas ya tienen asignación creada.
+   */
+  matrizFilaId?: number | null;
 };
 
 export type CreateAssignmentResult =
@@ -543,13 +549,24 @@ export async function createAssignment(
       ? ["No Urgente", "NO URGENTE", "no urgente", "Baja", "Bajo", "low", "3"]
       : ["Medio", "MEDIO", "medio", "Media", "Normal", "medium", "2"];
   const labelPrioridad = isHighPrior ? "Urgente" : isLowPrior ? "No Urgente" : "Medio";
-  const metaHeader = [
+  const matrizFilaId =
+    typeof data.matrizFilaId === "number" &&
+    Number.isInteger(data.matrizFilaId) &&
+    data.matrizFilaId > 0
+      ? data.matrizFilaId
+      : null;
+
+  const metaHeaderLines = [
     `[Tarea creada por revisor] ${revEmail}`,
     `[Asignado a] ${data.supervisorName ? `${data.supervisorName} · ` : ""}${superEmail}`,
     `[Vence] ${dueAtDate}`,
     `[Prioridad] ${labelPrioridad}`,
     `[Estado] ${data.status?.trim() || "pendiente"}`,
-  ].join("\n");
+  ];
+  if (matrizFilaId !== null) {
+    metaHeaderLines.push(`[Matriz] #${matrizFilaId}`);
+  }
+  const metaHeader = metaHeaderLines.join("\n");
   const description = (data.descripcion?.trim() ? `${data.descripcion.trim()}\n\n---\n` : "") + metaHeader;
 
   // Columnas reales que EXISTEN en la tabla (singular attachment_*):

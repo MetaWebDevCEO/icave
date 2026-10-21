@@ -14,9 +14,10 @@ export type SupervisorOption = {
 };
 
 export type ModalMode =
-  | { kind: "nueva" }
   | { kind: "fila"; actividad: MatrizOption }
   | { kind: "multiples"; actividades: MatrizOption[] };
+
+const ALL_SUPERVISORS_VALUE = "__ALL_SUPERVISORS__";
 
 function toISOAtMidnight(input: Date | string): string {
   try {
@@ -51,43 +52,6 @@ function ultimoDiaMesEnCurso(): Date {
   return d;
 }
 
-/**
- * Dado un valor de input tipo "date" (YYYY-MM-DD, SIN hora, SIN zona),
- * genera un ISO-8601 que, al ser parseado en cualquier servidor TZ,
- * NUNCA cambia el número del día. Truco: usamos 12:00:00 UTC (mediodía).
- *
- * Con 12h UTC:
- *   UTC−12  → 00:00 del MISMO día (no pasa a ayer)
- *   UTC+14  → 02:00 del DÍA SIGUIENTE (no pasa a mañana)
- * Dentro de zonas habitadas [UTC−12, UTC+14], el día sigue siendo el mismo.
- */
-function dateInputToUTCNoon(dateStr: string): string {
-  const s = String(dateStr ?? "").trim();
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) {
-    // Valor corrupto: volvemos al último día del mes por seguridad.
-    const d = ultimoDiaMesEnCurso();
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, "0");
-    const dd = String(d.getDate()).padStart(2, "0");
-    return `${y}-${m}-${dd}T12:00:00.000Z`;
-  }
-  return `${s}T12:00:00.000Z`;
-}
-
-/**
- * Convertimos Date (locales del navegador) al YYYY-MM-DD que VIO el usuario
- * en el input (no el UTC de toISOString). toISOString() despieza TZ.
- * Ej: usuario en Madrid (UTC+2) 00:30 del 30 sep local
- *   new Date().toISOString() = 29 sep 22:30 UTC → slice = 29 (ERROR)
- *   getFullYear/getMonth/getDate = 30 (BIEN)
- */
-function localDateToInputValue(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
-
 function initialsOf(input: string | null | undefined): string {
   if (!input) return "?";
   const trimmed = input.trim();
@@ -113,6 +77,16 @@ function humanDate(iso: string): string {
   }
 }
 
+function getAssignableSupervisors(supervisores: SupervisorOption[]) {
+  const dedup = new Map<string, SupervisorOption>();
+  for (const supervisor of supervisores) {
+    const email = (supervisor.email ?? "").trim().toLowerCase();
+    if (!email || dedup.has(email)) continue;
+    dedup.set(email, supervisor);
+  }
+  return Array.from(dedup.values());
+}
+
 export type QuickAsignarFilaProps = {
   open: boolean;
   onClose: () => void;
@@ -121,7 +95,14 @@ export type QuickAsignarFilaProps = {
   mode: ModalMode;
   matrizOptions: MatrizOption[];
   supervisores: SupervisorOption[];
-  onCreated?: (result: { ok: true; ids: string[]; count: number }) => void;
+  onCreated?: (result: {
+    ok: true;
+    ids: string[];
+    count: number;
+    displayIds: number[];
+    supervisors: SupervisorOption[];
+    assigningToAll: boolean;
+  }) => Promise<void> | void;
   /**
    * Modo selección rápida: no se crea asignación, solo se elige un supervisor
    * para asociarlo a la fila indicada. Al confirmar se llama este callback.
@@ -140,20 +121,24 @@ export function QuickAsignarFila(props: QuickAsignarFilaProps) {
     currentUserEmail,
     currentUserId,
     mode,
-    matrizOptions,
     supervisores,
     onCreated,
     onSupervisorSelected,
   } = props;
 
-  const isNueva = mode.kind === "nueva";
   const isMulti = mode.kind === "multiples";
   const isFilaRapida = mode.kind === "fila";
   const isSelectionOnly = Boolean(props.selectionOnly);
   const selectionDisplayId = props.selectionOnly?.displayId ?? null;
+  const assignableSupervisors = React.useMemo(
+    () => getAssignableSupervisors(supervisores),
+    [supervisores]
+  );
 
   const [supervisorEmail, setSupervisorEmail] = React.useState<string>("");
-  const [fechaEntrega, setFechaEntrega] = React.useState<string>("");
+  const [fechaEntrega, setFechaEntrega] = React.useState<string>(() =>
+    ultimoDiaMesEnCurso().toISOString().slice(0, 10)
+  );
   const [prioridad, setPrioridad] = React.useState<"alto" | "medio" | "bajo">("medio");
   const [descripcion, setDescripcion] = React.useState<string>("");
   const [submitting, setSubmitting] = React.useState<boolean>(false);
@@ -162,53 +147,36 @@ export function QuickAsignarFila(props: QuickAsignarFilaProps) {
   const [progressCurrent, setProgressCurrent] = React.useState<number>(0);
   const [progressTotal, setProgressTotal] = React.useState<number>(0);
 
-  // Estado SÓLO para modo "nueva"
-  const [tituloLibre, setTituloLibre] = React.useState<string>("");
-
-  React.useEffect(() => {
-    if (open) {
-      setSupervisorEmail("");
-      setPrioridad("medio");
-      setDescripcion("");
-      setProgressCurrent(0);
-      setProgressTotal(0);
-      setTituloLibre("");
-      const def = ultimoDiaMesEnCurso();
-      setFechaEntrega(def.toISOString().slice(0, 10));
-    }
-  }, [
-    open,
-    mode.kind === "fila" ? mode.actividad.id : mode.kind === "multiples" ? "multi-" + mode.actividades.map(a => a.id).join("-") : "nueva",
-  ]);
-
   if (!open) return null;
 
+  const assigningToAll =
+    !isSelectionOnly && supervisorEmail === ALL_SUPERVISORS_VALUE;
   const supervisorSeleccionado =
-    supervisores.find((s) => (s.email ?? "") === supervisorEmail) ?? null;
+    assignableSupervisors.find((s) => (s.email ?? "") === supervisorEmail) ??
+    null;
+  const targetSupervisores = assigningToAll
+    ? assignableSupervisors
+    : supervisorSeleccionado?.email
+      ? [supervisorSeleccionado]
+      : [];
 
   // En modo "fila" la actividad viene dada por mode.actividad.
-  // En modo "nueva" la asignación NO pertenece a la matriz → sólo título libre.
-  // En modo "multiples" usamos la lista de matrizOptions pasadas.
+  // En modo "multiples" usamos la lista de actividades seleccionadas.
   const filaActividad = mode.kind === "fila" ? mode.actividad : null;
-  const tituloManual = isNueva ? tituloLibre.trim() : "";
 
   let actividadTituloFinal = "";
-  if (tituloManual.length > 0) {
-    actividadTituloFinal = tituloManual;
-  } else if (filaActividad) {
+  if (filaActividad) {
     actividadTituloFinal =
       filaActividad.actividad.trim().length > 0
         ? `#${filaActividad.id} · ${filaActividad.actividad.trim()}`
         : `Actividad #${filaActividad.id} (sin nombre)`;
   }
 
-  const encabezadoModal = isNueva
-    ? "Nueva asignación (fuera de la matriz)"
-    : isMulti
-      ? `Reasignar ${mode.actividades.length} actividad${mode.actividades.length === 1 ? "" : "es"}`
-      : isSelectionOnly
-        ? "Seleccionar supervisor"
-        : "Asignar a supervisor";
+  const encabezadoModal = isMulti
+    ? `Reasignar ${mode.actividades.length} actividad${mode.actividades.length === 1 ? "" : "es"}`
+    : isSelectionOnly
+      ? "Seleccionar supervisor"
+      : "Asignar a supervisor";
 
   const subtituloModal = isMulti
     ? mode.actividades.length === 0
@@ -220,9 +188,7 @@ export function QuickAsignarFila(props: QuickAsignarFilaProps) {
         ? "Elige el supervisor. Fecha límite y prioridad se fijan por defecto."
         : actividadTituloFinal.length > 0
           ? actividadTituloFinal
-          : isNueva
-            ? "Escribe un título para la asignación."
-            : "Actividad sin título.";
+          : "Actividad sin título.";
 
   function buildTitleForMulti(a: MatrizOption): string {
     return a.actividad.trim().length > 0
@@ -241,14 +207,12 @@ export function QuickAsignarFila(props: QuickAsignarFilaProps) {
       if (actividadTituloFinal.length === 0) {
         sileo.error({
           title: "Falta el título",
-          description: isNueva
-            ? "Escribe un título para la asignación."
-            : "Actividad no válida en la matriz.",
+          description: "Actividad no válida en la matriz.",
         });
         return;
       }
     }
-    if (!supervisorSeleccionado?.email) {
+    if (targetSupervisores.length === 0) {
       sileo.error({ title: "Falta el supervisor", description: "Selecciona un supervisor." });
       return;
     }
@@ -263,11 +227,11 @@ export function QuickAsignarFila(props: QuickAsignarFilaProps) {
     if (isSelectionOnly && selectionDisplayId != null) {
       const payload = {
         displayId: selectionDisplayId,
-        supervisor: supervisorSeleccionado,
+        supervisor: targetSupervisores[0]!,
       };
       try {
         setSubmitting(true);
-        await Promise.resolve(props.onSupervisorSelected?.(payload));
+        await Promise.resolve(onSupervisorSelected?.(payload));
         sileo.success({
           title: "Supervisor asignado",
           description: "Quedará guardado de forma permanente.",
@@ -293,8 +257,6 @@ export function QuickAsignarFila(props: QuickAsignarFilaProps) {
       const fechaISO = toISOAtMidnight(new Date(fechaEntrega + "T00:00:00Z"));
       const basePayload = {
         descripcion: descripcion.trim(),
-        supervisorEmail: supervisorSeleccionado.email,
-        supervisorName: supervisorSeleccionado.displayName,
         revisorEmail: currentUserEmail ?? "",
         revisorUserId: currentUserId,
         fechaEntregaLimiteISO: fechaISO,
@@ -305,37 +267,51 @@ export function QuickAsignarFila(props: QuickAsignarFilaProps) {
 
       if (isMulti) {
         const items = mode.actividades;
-        setProgressTotal(items.length);
+        const totalAssignments = items.length * targetSupervisores.length;
+        setProgressTotal(totalAssignments);
         const ids: string[] = [];
         const errors: string[] = [];
-        for (let i = 0; i < items.length; i++) {
-          const a = items[i]!;
-          setProgressCurrent(i);
-          try {
-            const r = await createAssignment({
-              ...basePayload,
-              actividadTitulo: buildTitleForMulti(a),
-            });
-            if (r.ok) {
-              ids.push(r.id);
-            } else {
-              errors.push(`#${a.id}: ${r.error}`);
+        let completed = 0;
+        for (const a of items) {
+          for (const supervisor of targetSupervisores) {
+            setProgressCurrent(completed);
+            try {
+              const r = await createAssignment({
+                ...basePayload,
+                actividadTitulo: buildTitleForMulti(a),
+                supervisorEmail: supervisor.email!,
+                supervisorName: supervisor.displayName,
+                matrizFilaId: a.id,
+              });
+              if (r.ok) {
+                ids.push(r.id);
+              } else {
+                errors.push(
+                  `#${a.id} · ${supervisor.displayName}: ${r.error}`
+                );
+              }
+            } catch (err) {
+              errors.push(
+                `#${a.id} · ${supervisor.displayName}: ${
+                  err instanceof Error ? err.message : "Error desconocido."
+                }`
+              );
+            } finally {
+              completed += 1;
+              setProgressCurrent(completed);
             }
-          } catch (err) {
-            errors.push(
-              `#${a.id}: ${err instanceof Error ? err.message : "Error desconocido."}`
-            );
           }
         }
-        setProgressCurrent(items.length);
 
         const detalleErrores = errors.slice(0, 3).join(" · ");
         if (ids.length > 0 && errors.length === 0) {
           sileo.success({
             title: "Asignaciones creadas",
-            description: `${ids.length} asignaci${ids.length === 1 ? "ón" : "ones"} creada${
-              ids.length === 1 ? "" : "s"
-            } correctamente.`,
+            description: assigningToAll
+              ? `${ids.length} asignaciones creadas para ${targetSupervisores.length} supervisores.`
+              : `${ids.length} asignaci${ids.length === 1 ? "ón" : "ones"} creada${
+                  ids.length === 1 ? "" : "s"
+                } correctamente.`,
           });
         } else if (ids.length > 0) {
           sileo.warning({
@@ -351,23 +327,70 @@ export function QuickAsignarFila(props: QuickAsignarFilaProps) {
           });
         }
         if (ids.length > 0) {
-          onCreated?.({ ok: true, ids, count: ids.length });
+          await Promise.resolve(
+            onCreated?.({
+              ok: true,
+              ids,
+              count: ids.length,
+              displayIds: items.map((item) => item.id),
+              supervisors: targetSupervisores,
+              assigningToAll,
+            })
+          );
         }
       } else {
-        const r = await createAssignment({
-          ...basePayload,
-          actividadTitulo: actividadTituloFinal,
-        });
-        if (r.ok) {
+        const ids: string[] = [];
+        const errors: string[] = [];
+        for (const supervisor of targetSupervisores) {
+          const r = await createAssignment({
+            ...basePayload,
+            actividadTitulo: actividadTituloFinal,
+            supervisorEmail: supervisor.email!,
+            supervisorName: supervisor.displayName,
+            matrizFilaId: mode.kind === "fila" ? mode.actividad.id : null,
+          });
+          if (r.ok) {
+            ids.push(r.id);
+          } else {
+            errors.push(`${supervisor.displayName}: ${r.error || "Intenta de nuevo."}`);
+          }
+        }
+        if (ids.length > 0 && errors.length === 0) {
           sileo.success({
             title: "Asignación creada",
-            description: "La tarea se creó correctamente.",
+            description: assigningToAll
+              ? `La tarea se creó para ${targetSupervisores.length} supervisores.`
+              : "La tarea se creó correctamente.",
           });
-          onCreated?.({ ok: true, ids: [r.id], count: 1 });
+          await Promise.resolve(
+            onCreated?.({
+              ok: true,
+              ids,
+              count: ids.length,
+              displayIds: mode.kind === "fila" ? [mode.actividad.id] : [],
+              supervisors: targetSupervisores,
+              assigningToAll,
+            })
+          );
+        } else if (ids.length > 0) {
+          sileo.warning({
+            title: "Asignaciones parciales",
+            description: `Se crearon ${ids.length} de ${targetSupervisores.length}. ${errors[0] ?? ""}`.trim(),
+          });
+          await Promise.resolve(
+            onCreated?.({
+              ok: true,
+              ids,
+              count: ids.length,
+              displayIds: mode.kind === "fila" ? [mode.actividad.id] : [],
+              supervisors: targetSupervisores,
+              assigningToAll,
+            })
+          );
         } else {
           sileo.error({
             title: "No se pudo crear la asignación",
-            description: r.error || "Intenta de nuevo.",
+            description: errors[0] || "Intenta de nuevo.",
           });
         }
       }
@@ -437,26 +460,6 @@ export function QuickAsignarFila(props: QuickAsignarFilaProps) {
           </div>
 
           <div className="space-y-4 overflow-y-auto px-5 py-4">
-            {isNueva ? (
-              <div className="space-y-2 rounded-xl border border-zinc-100 bg-zinc-50/60 p-3">
-                <label className="block text-xs font-medium text-zinc-700">
-                  Título de la asignación
-                </label>
-                <input
-                  type="text"
-                  autoFocus
-                  required
-                  value={tituloLibre}
-                  onChange={(e) => setTituloLibre(e.target.value)}
-                  placeholder="Ej: Revisión semanal de actividades del eje 1…"
-                  className="h-9 w-full rounded-lg border border-zinc-200 bg-white px-3 text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-400 focus:outline-none focus:ring-2 focus:ring-zinc-200"
-                />
-                <p className="text-[11px] text-zinc-500">
-                  Esta asignación no pertenece a una actividad registrada en la matriz.
-                </p>
-              </div>
-            ) : null}
-
             {isFilaRapida && !isSelectionOnly ? (
               <div className="rounded-xl border border-zinc-100 bg-zinc-50/60 p-3">
                 <div className="mb-2 flex items-center gap-2 text-[11px] text-zinc-500">
@@ -482,14 +485,27 @@ export function QuickAsignarFila(props: QuickAsignarFilaProps) {
                 className="mt-1 h-9 w-full rounded-lg border border-zinc-200 bg-white px-3 text-sm text-zinc-900 focus:border-zinc-400 focus:outline-none focus:ring-2 focus:ring-zinc-200"
               >
                 <option value="">Selecciona un supervisor…</option>
-                {supervisores.map((s) => (
+                {!isSelectionOnly && assignableSupervisors.length > 1 ? (
+                  <option value={ALL_SUPERVISORS_VALUE}>
+                    Todos los supervisores ({assignableSupervisors.length})
+                  </option>
+                ) : null}
+                {assignableSupervisors.map((s) => (
                   <option key={s.id} value={s.email ?? ""}>
                     {s.displayName}
                     {s.email ? ` · ${s.email}` : ""}
                   </option>
                 ))}
               </select>
-              {supervisorSeleccionado && (
+              {assigningToAll ? (
+                <div className="mt-2 rounded-lg border border-zinc-100 bg-zinc-50 px-3 py-2 text-xs text-zinc-700">
+                  Se creará una asignación por cada actividad para los{" "}
+                  <span className="font-semibold">
+                    {assignableSupervisors.length} supervisores
+                  </span>{" "}
+                  disponibles.
+                </div>
+              ) : supervisorSeleccionado ? (
                 <div className="mt-2 flex items-center gap-2 rounded-lg border border-zinc-100 bg-zinc-50 px-3 py-2">
                   <div className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-zinc-200 text-xs font-semibold text-zinc-700">
                     {initialsOf(
@@ -506,7 +522,7 @@ export function QuickAsignarFila(props: QuickAsignarFilaProps) {
                     </div>
                   </div>
                 </div>
-              )}
+              ) : null}
             </div>
 
             {!isFilaRapida ? (
@@ -608,13 +624,20 @@ export function QuickAsignarFila(props: QuickAsignarFilaProps) {
                     ? "Guardando…"
                     : "Creando…"
                 : isMulti
-                  ? `Crear ${mode.actividades.length} asignaci${
-                      mode.actividades.length === 1 ? "ón" : "ones"
+                  ? `Crear ${
+                      mode.actividades.length *
+                      Math.max(targetSupervisores.length, 1)
+                    } asignaci${
+                      mode.actividades.length * Math.max(targetSupervisores.length, 1) === 1
+                        ? "ón"
+                        : "ones"
                     }`
                   : isSelectionOnly
                     ? "Seleccionar"
                     : isFilaRapida
-                      ? "Asignar"
+                      ? assigningToAll
+                        ? `Asignar a ${targetSupervisores.length}`
+                        : "Asignar"
                       : "Crear asignación"}
             </button>
           </div>

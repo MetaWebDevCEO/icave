@@ -3,7 +3,7 @@
 import { useMemo, useRef, useState } from "react";
 import { useFormStatus } from "react-dom";
 import { useRouter } from "next/navigation";
-import { formatCalendarDateShort, parseAsCalendarDate } from "@/lib/calendar-date";
+import { formatCalendarDateShort, getUtcYmd, parseAsCalendarDate } from "@/lib/calendar-date";
 import {
   maxEvidenceFiles,
   maxSubmissionSizeBytes,
@@ -12,6 +12,7 @@ import {
 } from "@/lib/submission-files";
 import { FileText as DocumentIcon } from "@/components/ui/icons";
 import { createClient } from "@/utils/supabase/client";
+import type { UpdateAssignmentResult } from "@/app/platform/task/update-assignment";
 import { sileo } from "sileo";
 
 const MAX_SUBMISSION_SIZE_BYTES = maxSubmissionSizeBytes();
@@ -59,6 +60,37 @@ function getPriorityTone(priority: string | null | undefined) {
     return "text-amber-700 dark:text-amber-300";
   }
   return "text-emerald-700 dark:text-emerald-300";
+}
+
+/** Prioridad de la DB → valor exacto del selector (Urgente / Medio / No Urgente). */
+function getPriorityOptionValue(priority: string | null | undefined) {
+  const normalized = (priority ?? "").trim().toLowerCase();
+  const hasNoUrgente =
+    normalized.includes("no urg") ||
+    normalized.startsWith("no urg") ||
+    normalized.includes("baja") ||
+    normalized.includes("bajo") ||
+    normalized === "low" ||
+    normalized === "3";
+  if (hasNoUrgente) return "No Urgente";
+  if (
+    normalized.startsWith("urg") ||
+    normalized.includes("alta") ||
+    normalized.includes("alto") ||
+    normalized === "high" ||
+    normalized === "1"
+  ) {
+    return "Urgente";
+  }
+  return "Medio";
+}
+
+/** `due_at` (ISO o date-only) → valor `YYYY-MM-DD` para el input date. */
+function toDateInputValue(value: string | null | undefined) {
+  const parts = getUtcYmd(value);
+  if (!parts) return "";
+  const [year, month, day] = parts;
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }
 
 function getStatusTone(status: string | null | undefined) {
@@ -137,6 +169,7 @@ function getVisibleDescription(description: string | null | undefined) {
         !normalized.startsWith("entregado el:") &&
         !normalized.startsWith("enviado por:") &&
         !normalized.startsWith("enviado el:") &&
+        !normalized.startsWith("[matriz]") &&
         !normalized.startsWith("evidencia")
       );
     })
@@ -193,6 +226,53 @@ function SubmitButton({
   );
 }
 
+function CommentSubmitButton({
+  label,
+  pendingLabel,
+}: {
+  label: string;
+  pendingLabel: string;
+}) {
+  const { pending } = useFormStatus();
+
+  return (
+    <button
+      type="submit"
+      disabled={pending}
+      className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-md bg-zinc-900 px-4 text-sm font-medium text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
+    >
+      {pending ? (
+        <>
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            aria-hidden="true"
+            className="h-4 w-4 animate-spin"
+          >
+            <circle
+              cx="12"
+              cy="12"
+              r="10"
+              stroke="currentColor"
+              strokeWidth="3"
+              className="opacity-25"
+            />
+            <path
+              d="M22 12a10 10 0 0 1-10 10"
+              stroke="currentColor"
+              strokeWidth="3"
+              strokeLinecap="round"
+            />
+          </svg>
+          {pendingLabel}
+        </>
+      ) : (
+        label
+      )}
+    </button>
+  );
+}
+
 function hasDeliveryEvidence(t: TaskRow) {
   const files = parseSubmissionFiles(t);
   if (files.length > 0) return true;
@@ -209,6 +289,7 @@ export function TaskBoard({
   onDelete,
   onDeleteEvidence,
   onMarkCompleted,
+  onUpdateAssignment,
 }: {
   role: UserRole;
   currentUserId: string;
@@ -219,10 +300,12 @@ export function TaskBoard({
   onDelete: (formData: FormData) => Promise<void>;
   onDeleteEvidence?: (formData: FormData) => Promise<void>;
   onMarkCompleted?: (formData: FormData) => Promise<void>;
+  onUpdateAssignment?: (formData: FormData) => Promise<UpdateAssignmentResult>;
 }) {
   const [openId, setOpenId] = useState<string | null>(null);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [isUploading, setIsUploading] = useState(false);
+  const [isSavingEdit, setIsSavingEdit] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const router = useRouter();
 
@@ -249,6 +332,7 @@ export function TaskBoard({
 
   const resetModalState = () => {
     setSelectedFiles([]);
+    setIsSavingEdit(false);
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
@@ -377,9 +461,10 @@ export function TaskBoard({
       </div>
 
       {selected && (
-        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 p-4 md:items-center">
-          <div className="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-lg border border-zinc-200 bg-white shadow-lg dark:border-zinc-800 dark:bg-zinc-950">
-            <div className="flex items-start justify-between gap-3 border-b border-zinc-200 px-4 py-3 dark:border-zinc-800">
+        <div className="fixed inset-0 z-50 flex items-end justify-center overflow-y-auto bg-black/50 p-3 sm:p-4 md:items-center">
+          <div className="my-auto flex max-h-[calc(100dvh-1.5rem)] w-full max-w-3xl flex-col overflow-hidden rounded-lg border border-zinc-200 bg-white shadow-lg sm:max-h-[calc(100dvh-2rem)] dark:border-zinc-800 dark:bg-zinc-950">
+            <div className="shrink-0 border-b border-zinc-200 px-4 py-3 dark:border-zinc-800">
+              <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <div className="truncate text-base font-semibold text-zinc-950 dark:text-zinc-50">
                   {selected.title ?? "Sin título"}
@@ -423,9 +508,11 @@ export function TaskBoard({
                   />
                 </svg>
               </button>
+              </div>
             </div>
 
-            <div className="grid gap-3 px-4 py-3">
+            <div className="flex-1 overflow-y-auto overscroll-contain px-4 py-3">
+              <div className="grid gap-3 pb-1">
               <div>
                 <div className="text-sm font-medium text-zinc-950 dark:text-zinc-50">
                   Instrucciones
@@ -463,6 +550,116 @@ export function TaskBoard({
                             : "Aún pendiente de entrega."}
                       </div>
                     )}
+                </div>
+              )}
+
+              {role === "revisor" && onUpdateAssignment && (
+                <div className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-black">
+                  <div className="text-sm font-medium text-zinc-950 dark:text-zinc-50">
+                    Editar asignación
+                  </div>
+                  <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                    Ajusta la prioridad o la fecha de entrega de esta tarea.
+                  </p>
+                  <form
+                    key={selected.id}
+                    className="mt-3 grid gap-3"
+                    onSubmit={async (e) => {
+                      e.preventDefault();
+                      if (isSavingEdit) return;
+                      const form = e.currentTarget;
+                      const fd = new FormData(form);
+                      setIsSavingEdit(true);
+                      try {
+                        const res = await onUpdateAssignment(fd);
+                        if (!res.ok) {
+                          throw new Error(res.error || "No se pudo actualizar la asignación.");
+                        }
+                        sileo.success({
+                          title: "Tarea actualizada",
+                          description: "Se guardaron la prioridad y la fecha de entrega.",
+                        });
+                        setOpenId(null);
+                        router.refresh();
+                      } catch (err) {
+                        sileo.error({
+                          title: "Error al actualizar",
+                          description:
+                            err instanceof Error ? err.message : "Inténtalo de nuevo.",
+                        });
+                      } finally {
+                        setIsSavingEdit(false);
+                      }
+                    }}
+                  >
+                    <input
+                      type="hidden"
+                      name="assignment_id"
+                      value={selected.id}
+                    />
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <label className="flex flex-col gap-1 text-sm">
+                        <span className="text-zinc-600 dark:text-zinc-400">
+                          Prioridad
+                        </span>
+                        <select
+                          name="priority"
+                          defaultValue={getPriorityOptionValue(selected.priority)}
+                          className="h-10 rounded-md border border-zinc-200 bg-white px-3 text-sm text-zinc-950 outline-none focus:ring-2 focus:ring-zinc-400 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-50"
+                        >
+                          <option value="Urgente">Urgente</option>
+                          <option value="Medio">Medio</option>
+                          <option value="No Urgente">No Urgente</option>
+                        </select>
+                      </label>
+                      <label className="flex flex-col gap-1 text-sm">
+                        <span className="text-zinc-600 dark:text-zinc-400">
+                          Fecha de entrega
+                        </span>
+                        <input
+                          type="date"
+                          name="due_at"
+                          required
+                          defaultValue={toDateInputValue(selected.due_at)}
+                          className="h-10 rounded-md border border-zinc-200 bg-white px-3 text-sm text-zinc-950 outline-none focus:ring-2 focus:ring-zinc-400 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-50"
+                        />
+                      </label>
+                    </div>
+                    <button
+                      type="submit"
+                      disabled={isSavingEdit}
+                      className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-md bg-zinc-900 px-4 text-sm font-medium text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
+                    >
+                      {isSavingEdit ? (
+                        <>
+                          <svg
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            aria-hidden="true"
+                            className="h-4 w-4 animate-spin"
+                          >
+                            <circle
+                              cx="12"
+                              cy="12"
+                              r="10"
+                              stroke="currentColor"
+                              strokeWidth="3"
+                              className="opacity-25"
+                            />
+                            <path
+                              d="M22 12a10 10 0 0 1-10 10"
+                              stroke="currentColor"
+                              strokeWidth="3"
+                              strokeLinecap="round"
+                            />
+                          </svg>
+                          Guardando…
+                        </>
+                      ) : (
+                        "Guardar cambios"
+                      )}
+                    </button>
+                  </form>
                 </div>
               )}
 
@@ -597,12 +794,18 @@ export function TaskBoard({
                       placeholder="Escribe un mensaje de retroalimentación para el supervisor…"
                       className="resize-none rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-900 outline-none focus:ring-2 focus:ring-zinc-400 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100"
                     />
-                    <button
-                      type="submit"
-                      className="inline-flex h-10 items-center justify-center rounded-md bg-zinc-900 px-4 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
-                    >
-                      {selected.reviewer_comment ? "Actualizar comentario" : "Enviar comentario"}
-                    </button>
+                    <CommentSubmitButton
+                      label={
+                        selected.reviewer_comment
+                          ? "Actualizar comentario"
+                          : "Enviar comentario"
+                      }
+                      pendingLabel={
+                        selected.reviewer_comment
+                          ? "Actualizando..."
+                          : "Enviando..."
+                      }
+                    />
                   </form>
                 </div>
               )}
@@ -891,6 +1094,7 @@ export function TaskBoard({
                       </div>
                     </section>
                   )}
+              </div>
             </div>
           </div>
         </div>
