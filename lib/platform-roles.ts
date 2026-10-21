@@ -1,6 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { SidebarSection } from "@/app/platform/components/sidebar";
-import { createClient as createSupabaseAdminClient } from "@supabase/supabase-js";
 import { safeQuerySelect, makeAdminClientOrNull } from "@/lib/safe-auth";
 
 export type UserRole = "revisor" | "usuario";
@@ -155,7 +154,7 @@ export function buildRevisorSections(): SidebarSection[] {
         { title: "Chat Directo", href: REVISOR_ROUTES.chat },
         { title: "Correos", href: REVISOR_ROUTES.correos },
         { title: "Archivero", href: REVISOR_ROUTES.documentos },
-        { title: "Planificador", href: REVISOR_ROUTES.planificador },
+        { title: "Calendario", href: REVISOR_ROUTES.planificador },
       ],
     },
     {
@@ -185,7 +184,7 @@ export function buildSupervisorSections(): SidebarSection[] {
         { title: "Chat Directo", href: SUPERVISOR_ROUTES.chat },
         { title: "Correos", href: SUPERVISOR_ROUTES.correos },
        
-        { title: "Planificador", href: SUPERVISOR_ROUTES.planificador },
+        { title: "Calendario", href: SUPERVISOR_ROUTES.planificador },
       ],
     },
     {
@@ -391,8 +390,8 @@ export async function strongCheckIsRevisor(
   userId: string,
   opts: { email?: string | null } = {}
 ): Promise<{ isRevisor: boolean; decidedRole: UserRole; reason: string }> {
-  let decidedRole: UserRole = await resolveRoleForUser(supabase, userId, opts);
-  let isRevisor: boolean = decidedRole === "revisor";
+  const decidedRole: UserRole = await resolveRoleForUser(supabase, userId, opts);
+  const isRevisor: boolean = decidedRole === "revisor";
   if (isRevisor) {
     return { isRevisor: true, decidedRole, reason: "resolveRoleForUser" };
   }

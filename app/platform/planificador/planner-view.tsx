@@ -330,7 +330,7 @@ export function PlannerView({ role, assignments }: PlannerViewProps) {
       <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
         <div>
           <h1 className="text-xl font-semibold text-zinc-950 dark:text-zinc-50">
-            Planificador
+            Calendario
           </h1>
           <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
             Fechas de creación, entrega, vencimiento y completado de las asignaciones.
