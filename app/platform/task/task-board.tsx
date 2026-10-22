@@ -108,6 +108,59 @@ function getStatusTone(status: string | null | undefined) {
   return "bg-amber-50 text-amber-700 ring-1 ring-inset ring-amber-200 dark:bg-amber-950/30 dark:text-amber-200 dark:ring-amber-900";
 }
 
+/** Día de calendario en UTC como número comparable (YYYYMMDD). */
+function utcDayNumber(value: string | null | undefined): number | null {
+  const parts = getUtcYmd(value);
+  if (!parts) return null;
+  const [year, month, day] = parts;
+  return year * 10000 + month * 100 + day;
+}
+
+function isTaskCompleted(status: string | null | undefined) {
+  const normalized = (status ?? "").trim().toLowerCase();
+  return (
+    normalized.includes("comp") ||
+    normalized.includes("done") ||
+    normalized.includes("termin") ||
+    normalized.includes("final") ||
+    normalized.includes("cerrad")
+  );
+}
+
+/** Entrega registrada después de la fecha límite (comparación por día UTC). */
+function wasDeliveredLate(t: TaskRow) {
+  const submittedDay = utcDayNumber(t.submitted_at ?? null);
+  const dueDay = utcDayNumber(t.due_at ?? null);
+  if (submittedDay === null || dueDay === null) return false;
+  return submittedDay > dueDay;
+}
+
+/** Entregada y todavía sin aprobar, fuera de la fecha límite. */
+function isDeliveredLate(t: TaskRow) {
+  const normalized = (t.status ?? "").trim().toLowerCase();
+  if (!normalized.includes("entreg") || isTaskCompleted(normalized)) return false;
+  return wasDeliveredLate(t);
+}
+
+/** Completada, pero se había entregado fuera de la fecha límite. */
+function isCompletedLate(t: TaskRow) {
+  if (!isTaskCompleted(t.status)) return false;
+  return wasDeliveredLate(t);
+}
+
+function getTaskStatusLabel(t: TaskRow) {
+  if (isCompletedLate(t)) return "Completada extemporánea";
+  if (isDeliveredLate(t)) return "Entrega extemporánea";
+  return t.status ?? "Pendiente";
+}
+
+function getTaskStatusTone(t: TaskRow) {
+  if (isCompletedLate(t) || isDeliveredLate(t)) {
+    return "bg-rose-50 text-rose-700 ring-1 ring-inset ring-rose-200 dark:bg-rose-950/30 dark:text-rose-200 dark:ring-rose-900";
+  }
+  return getStatusTone(t.status);
+}
+
 function getDueTone(value: string | null | undefined, status: string | null | undefined) {
   if (!value) return "text-zinc-500 dark:text-zinc-400";
 
@@ -392,10 +445,10 @@ export function TaskBoard({
                     <span
                       className={[
                         "shrink-0 rounded-full px-2.5 py-1 text-xs font-medium",
-                        getStatusTone(t.status),
+                        getTaskStatusTone(t),
                       ].join(" ")}
                     >
-                      {t.status ?? "Pendiente"}
+                      {getTaskStatusLabel(t)}
                     </span>
                   </div>
                 </div>
@@ -473,10 +526,10 @@ export function TaskBoard({
                   <span
                     className={[
                       "inline-flex rounded-full px-2.5 py-1 font-medium",
-                      getStatusTone(selected.status),
+                      getTaskStatusTone(selected),
                     ].join(" ")}
                   >
-                    {selected.status ?? "Pendiente"}
+                    {getTaskStatusLabel(selected)}
                   </span>
                   <span className={["inline-flex items-center font-medium", getPriorityTone(selected.priority)].join(" ")}>
                     {selected.priority ?? "Media"}
@@ -544,9 +597,13 @@ export function TaskBoard({
                     ) : (
                       <div className="mt-1.5 text-sm text-zinc-700 dark:text-zinc-300">
                         {isCompleted(selected.status)
-                          ? "Completada por el supervisor."
+                          ? isCompletedLate(selected)
+                            ? "Completada fuera de la fecha límite por el supervisor."
+                            : "Completada por el supervisor."
                           : selectedHasDelivery
-                            ? "Entregada — pendiente de tu aprobación."
+                            ? isDeliveredLate(selected)
+                              ? "Entregada fuera de la fecha límite — pendiente de tu aprobación."
+                              : "Entregada — pendiente de tu aprobación."
                             : "Aún pendiente de entrega."}
                       </div>
                     )}
