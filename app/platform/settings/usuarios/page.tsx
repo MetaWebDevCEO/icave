@@ -418,19 +418,56 @@ export default async function UsuariosPage() {
     try {
       const { error } = await srvAdmin.auth.admin.deleteUser(targetUserId);
       if (error) {
-        return {
-          ok: false,
-          url: baseUrl + "?error=" + encodeURIComponent(error.message),
-        };
+        const rawMessage = error.message ?? "";
+        const code = String(
+          (error as { code?: unknown }).code ?? ""
+        ).toLowerCase();
+        const lower = rawMessage.toLowerCase();
+        // La lista incluye entradas "ghost" (ids huérfanos en user_roles sin
+        // fila en auth.users). Para ellas el borrado definitivo responde
+        // "not found" y, como sus roles ya se limpiaron arriba, la baja es
+        // efectiva: no hay nada más que eliminar.
+        const alreadyGone =
+          code === "404" ||
+          lower.includes("not found") ||
+          lower.includes("user not found");
+
+        if (!alreadyGone) {
+          console.debug(
+            "[usuarios:deleteUser] Borrado definitivo falló; se intenta borrado lógico:",
+            rawMessage
+          );
+          // Si el usuario tiene referencias en tablas públicas, el borrado
+          // definitivo falla. El borrado lógico lo saca de la plataforma y le
+          // impide iniciar sesión, que es el objetivo de la acción.
+          const soft = await srvAdmin.auth.admin.deleteUser(targetUserId, true);
+          if (soft.error) {
+            console.debug(
+              "[usuarios:deleteUser] Borrado lógico también falló:",
+              soft.error.message
+            );
+            return {
+              ok: false,
+              url:
+                baseUrl +
+                "?error=" +
+                encodeURIComponent("No se pudo eliminar el usuario. Intenta de nuevo."),
+            };
+          }
+        }
       }
     } catch (e) {
       if (isNextRedirectError(e)) throw e;
+      console.debug(
+        "[usuarios:deleteUser] Excepción al eliminar:",
+        e instanceof Error ? e.message : String(e)
+      );
       return {
         ok: false,
         url:
           baseUrl +
           "?error=" +
-          encodeURIComponent(e instanceof Error ? e.message : String(e)),
+          encodeURIComponent("No se pudo eliminar el usuario. Intenta de nuevo."),
       };
     }
 

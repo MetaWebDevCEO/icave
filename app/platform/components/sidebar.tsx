@@ -16,18 +16,29 @@ export type SidebarSection = {
   items: SidebarNavItem[];
 };
 
+/** Marca de tiempo (ISO) de la última vez que el usuario abrió el chat. */
+const CHAT_SEEN_KEY = "icave:chat-seen-at";
+
+// Punto indicador de actividad pendiente en un item del sidebar.
+export type SidebarDot = {
+  /** Clase Tailwind del color del punto (ej. "bg-rose-500"). */
+  color: string;
+  /** Texto accesible del indicador. */
+  label: string;
+};
+
 // Cada item del sidebar memoizado → no re-renderiza por cambio de pathname
 // si este item no estaba seleccionado.
 const SidebarLink = memo(function SidebarLink({
   item,
   pathname,
   onClose,
-  showDot,
+  dot,
 }: {
   item: SidebarNavItem;
   pathname: string | null;
   onClose: () => void;
-  showDot?: boolean;
+  dot?: SidebarDot | null;
 }) {
   const active =
     pathname === item.href ||
@@ -46,10 +57,10 @@ const SidebarLink = memo(function SidebarLink({
       ].join(" ")}
     >
       <span className="truncate">{item.title}</span>
-      {showDot && (
+      {dot && (
         <span
-          aria-label="Tienes notificaciones sin leer"
-          className="h-2 w-2 shrink-0 rounded-full bg-rose-500"
+          aria-label={dot.label}
+          className={`h-2 w-2 shrink-0 rounded-full ${dot.color}`}
         />
       )}
     </Link>
@@ -60,12 +71,12 @@ const SidebarSectionBlock = memo(function SidebarSectionBlock({
   section,
   pathname,
   onClose,
-  dotHref,
+  dots,
 }: {
   section: SidebarSection;
   pathname: string | null;
   onClose: () => void;
-  dotHref: string | null;
+  dots: Record<string, SidebarDot>;
 }) {
   return (
     <div key={section.title}>
@@ -79,7 +90,7 @@ const SidebarSectionBlock = memo(function SidebarSectionBlock({
             item={item}
             pathname={pathname}
             onClose={onClose}
-            showDot={dotHref !== null && item.href === dotHref}
+            dot={dots[item.href] ?? null}
           />
         ))}
       </div>
@@ -157,7 +168,18 @@ function SidebarImpl({
     return null;
   }, [sections]);
 
+  // Ruta del item de chat (si el rol la tiene en el sidebar).
+  const chatHref = useMemo(() => {
+    for (const section of sections) {
+      for (const item of section.items) {
+        if (/chat/i.test(item.href)) return item.href;
+      }
+    }
+    return null;
+  }, [sections]);
+
   const [hasUnreadNotifications, setHasUnreadNotifications] = useState(false);
+  const [hasUnreadChat, setHasUnreadChat] = useState(false);
 
   // Punto rojo: se consulta al montar, al cambiar de ruta y al recuperar foco.
   useEffect(() => {
@@ -192,7 +214,81 @@ function SidebarImpl({
     };
   }, [notifHref, pathname]);
 
-  const dotHref = notifHref && hasUnreadNotifications ? notifHref : null;
+  // Punto azul: hay mensajes de chat entrantes más recientes que la última vez
+  // que el usuario abrió el chat. Estando en el chat se marca como visto.
+  useEffect(() => {
+    if (!chatHref) return;
+
+    let cancelled = false;
+    const supabase = createClient();
+    const onChat =
+      pathname === chatHref || (pathname?.startsWith(`${chatHref}/`) ?? false);
+
+    const loadUnread = async () => {
+      try {
+        if (onChat) {
+          window.localStorage.setItem(CHAT_SEEN_KEY, new Date().toISOString());
+          if (!cancelled) setHasUnreadChat(false);
+          return;
+        }
+
+        const {
+          data: { user },
+        } = await supabase.auth.getUser();
+        const me = user?.id ?? null;
+        if (cancelled) return;
+        if (!me) {
+          setHasUnreadChat(false);
+          return;
+        }
+
+        const { data, error } = await supabase
+          .from("messages")
+          .select("created_at")
+          .neq("sender_id", me)
+          .order("created_at", { ascending: false })
+          .limit(1);
+        if (cancelled) return;
+        if (error || !data || data.length === 0) {
+          setHasUnreadChat(false);
+          return;
+        }
+
+        const seenAt = window.localStorage.getItem(CHAT_SEEN_KEY);
+        const seenTime = seenAt ? new Date(seenAt).getTime() : 0;
+        const lastAt = (data[0] as { created_at?: string }).created_at;
+        const lastTime = lastAt ? new Date(lastAt).getTime() : 0;
+        setHasUnreadChat(seenTime > 0 ? lastTime > seenTime : true);
+      } catch {
+        if (!cancelled) setHasUnreadChat(false);
+      }
+    };
+
+    loadUnread();
+    window.addEventListener("focus", loadUnread);
+
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", loadUnread);
+    };
+  }, [chatHref, pathname]);
+
+  const dots = useMemo(() => {
+    const map: Record<string, SidebarDot> = {};
+    if (notifHref && hasUnreadNotifications) {
+      map[notifHref] = {
+        color: "bg-rose-500",
+        label: "Tienes notificaciones sin leer",
+      };
+    }
+    if (chatHref && hasUnreadChat) {
+      map[chatHref] = {
+        color: "bg-[#009ADD]",
+        label: "Tienes mensajes sin leer",
+      };
+    }
+    return map;
+  }, [notifHref, hasUnreadNotifications, chatHref, hasUnreadChat]);
 
   useEffect(() => {
     let cancelled = false;
@@ -296,7 +392,7 @@ function SidebarImpl({
                 section={section}
                 pathname={pathname}
                 onClose={onClose}
-                dotHref={dotHref}
+                dots={dots}
               />
             ))}
           </div>

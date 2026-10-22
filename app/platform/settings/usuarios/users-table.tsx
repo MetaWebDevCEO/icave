@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import { sileo } from "sileo";
 
 import { createClient } from "@/utils/supabase/client";
 import { Avatar } from "@/components/ui/avatar";
@@ -74,8 +75,36 @@ export function UsersTable({
     startTransition(async () => {
       try {
         const res = await action(formData);
-        if (res?.url) router.replace(res.url);
+        const target = typeof res?.url === "string" ? res.url : "";
+        const queryIndex = target.indexOf("?");
+        const params =
+          queryIndex >= 0 ? new URLSearchParams(target.slice(queryIndex + 1)) : null;
+        const cleanPath = queryIndex >= 0 ? target.slice(0, queryIndex) : target;
+
+        if (res?.ok) {
+          sileo.success({
+            title: params?.get("message") ?? "Operación completada correctamente.",
+          });
+        } else {
+          sileo.error({
+            title: params?.get("error") ?? "No se pudo completar la operación.",
+          });
+        }
+
+        // La acción devuelve el resultado por URL (?error=/?message=) y esta
+        // página no los renderiza, así que refrescamos el componente servidor
+        // para que la tabla refleje el alta, la edición o la baja del usuario.
+        const currentUrl = `${window.location.pathname}${window.location.search}`;
+        if (cleanPath && cleanPath !== currentUrl) {
+          router.replace(cleanPath);
+        } else {
+          router.refresh();
+        }
       } catch (e) {
+        sileo.error({
+          title: "Ocurrió un error inesperado",
+          description: "Intenta de nuevo en unos segundos.",
+        });
         console.debug("[users-table] action exception:", e);
       }
     });
