@@ -3,6 +3,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { TaskPageContent } from "@/app/platform/task/task-page-content";
 import { updateAssignment } from "@/app/platform/task/update-assignment";
+import { returnAssignmentToPending } from "@/app/platform/task/return-assignment";
 import type { TaskRow } from "@/app/platform/task/task-board";
 import {
   createClient as createSupabaseAdminClient,
@@ -709,6 +710,7 @@ export default async function RevisorTaskPage({
       onDelete={deleteAssignment}
       onMarkCompleted={markCompleted}
       onUpdateAssignment={updateAssignment}
+      onReturnToPending={returnAssignmentToPending}
     />
   );
 }

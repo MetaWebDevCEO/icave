@@ -135,3 +135,23 @@
 [data-sileo-viewport] {
   z-index: 999999;
 }
+
+/* Fondo del hilo de chat: tinte azul de marca con textura sutil */
+.wa-wallpaper {
+  background-color: #ffffff;
+  background-image: radial-gradient(
+    circle at 1px 1px,
+    rgba(3, 47, 108, 0.055) 1px,
+    transparent 0
+  );
+  background-size: 22px 22px;
+}
+
+.dark .wa-wallpaper {
+  background-color: #05131f;
+  background-image: radial-gradient(
+    circle at 1px 1px,
+    rgba(244, 244, 244, 0.05) 1px,
+    transparent 0
+  );
+}

@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 import type { TaskRow } from "@/app/platform/task/task-board";
 import { TaskPageContent } from "@/app/platform/task/task-page-content";
 import { updateAssignment } from "@/app/platform/task/update-assignment";
+import { returnAssignmentToPending } from "@/app/platform/task/return-assignment";
 import {
   createClient as createSupabaseAdminClient,
   type PostgrestError,
@@ -1218,6 +1219,7 @@ export default async function TaskPage({
       onDeleteEvidence={deleteEvidenceFile}
       onMarkCompleted={role === "revisor" ? markCompleted : undefined}
       onUpdateAssignment={role === "revisor" ? updateAssignment : undefined}
+      onReturnToPending={role === "revisor" ? returnAssignmentToPending : undefined}
     />
   );
 }

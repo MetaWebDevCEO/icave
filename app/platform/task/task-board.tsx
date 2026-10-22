@@ -13,6 +13,7 @@ import {
 import { FileText as DocumentIcon } from "@/components/ui/icons";
 import { createClient } from "@/utils/supabase/client";
 import type { UpdateAssignmentResult } from "@/app/platform/task/update-assignment";
+import type { ReturnToPendingResult } from "@/app/platform/task/return-assignment";
 import { sileo } from "sileo";
 
 const MAX_SUBMISSION_SIZE_BYTES = maxSubmissionSizeBytes();
@@ -343,6 +344,7 @@ export function TaskBoard({
   onDeleteEvidence,
   onMarkCompleted,
   onUpdateAssignment,
+  onReturnToPending,
 }: {
   role: UserRole;
   currentUserId: string;
@@ -354,11 +356,14 @@ export function TaskBoard({
   onDeleteEvidence?: (formData: FormData) => Promise<void>;
   onMarkCompleted?: (formData: FormData) => Promise<void>;
   onUpdateAssignment?: (formData: FormData) => Promise<UpdateAssignmentResult>;
+  onReturnToPending?: (formData: FormData) => Promise<ReturnToPendingResult>;
 }) {
   const [openId, setOpenId] = useState<string | null>(null);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [isUploading, setIsUploading] = useState(false);
   const [isSavingEdit, setIsSavingEdit] = useState(false);
+  const [isReturning, setIsReturning] = useState(false);
+  const [returnReason, setReturnReason] = useState("");
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const router = useRouter();
 
@@ -609,6 +614,99 @@ export function TaskBoard({
                     )}
                 </div>
               )}
+
+              {role === "revisor" &&
+                onReturnToPending &&
+                selectedHasDelivery &&
+                !isCompleted(selected.status) && (
+                  <div className="rounded-lg border border-rose-200 bg-rose-50/60 p-4 dark:border-rose-900/40 dark:bg-rose-950/20">
+                    <div className="text-sm font-medium text-rose-900 dark:text-rose-100">
+                      ¿La entrega no es correcta?
+                    </div>
+                    <p className="mt-1 text-xs text-rose-800/90 dark:text-rose-200/90">
+                      Regresa la actividad a pendiente para que el supervisor la
+                      vuelva a entregar. Se conserva la evidencia y se le notifica
+                      el motivo.
+                    </p>
+                    <form
+                      key={selected.id}
+                      className="mt-3 grid gap-3"
+                      onSubmit={async (e) => {
+                        e.preventDefault();
+                        if (isReturning) return;
+                        const reason = returnReason.trim();
+                        if (!reason) {
+                          sileo.error({ title: "Escribe el motivo de la devolución." });
+                          return;
+                        }
+                        setIsReturning(true);
+                        try {
+                          const fd = new FormData();
+                          fd.set("assignment_id", selected.id);
+                          fd.set("reason", reason);
+                          const res = await onReturnToPending(fd);
+                          if (!res.ok) {
+                            sileo.error({ title: res.error });
+                            return;
+                          }
+                          setReturnReason("");
+                          sileo.success({
+                            title: res.notified
+                              ? "Actividad devuelta y supervisor notificado"
+                              : "Actividad devuelta a pendiente",
+                          });
+                          setOpenId(null);
+                          router.refresh();
+                        } finally {
+                          setIsReturning(false);
+                        }
+                      }}
+                    >
+                      <textarea
+                        value={returnReason}
+                        onChange={(e) => setReturnReason(e.target.value)}
+                        rows={3}
+                        required
+                        placeholder="Explica qué falta o está incorrecto…"
+                        className="resize-none rounded-md border border-rose-200 bg-white px-3 py-2 text-sm text-zinc-900 outline-none focus:ring-2 focus:ring-rose-400 dark:border-rose-900/40 dark:bg-zinc-950 dark:text-zinc-100"
+                      />
+                      <button
+                        type="submit"
+                        disabled={isReturning}
+                        className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-md bg-rose-600 px-4 text-sm font-medium text-white hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-rose-500 dark:hover:bg-rose-600"
+                      >
+                        {isReturning ? (
+                          <>
+                            <svg
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              aria-hidden="true"
+                              className="h-4 w-4 animate-spin"
+                            >
+                              <circle
+                                cx="12"
+                                cy="12"
+                                r="10"
+                                stroke="currentColor"
+                                strokeWidth="3"
+                                className="opacity-25"
+                              />
+                              <path
+                                d="M22 12a10 10 0 0 1-10 10"
+                                stroke="currentColor"
+                                strokeWidth="3"
+                                strokeLinecap="round"
+                              />
+                            </svg>
+                            Devolviendo…
+                          </>
+                        ) : (
+                          "Regresar a pendiente"
+                        )}
+                      </button>
+                    </form>
+                  </div>
+                )}
 
               {role === "revisor" && onUpdateAssignment && (
                 <div className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-black">

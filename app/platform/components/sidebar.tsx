@@ -22,10 +22,12 @@ const SidebarLink = memo(function SidebarLink({
   item,
   pathname,
   onClose,
+  showDot,
 }: {
   item: SidebarNavItem;
   pathname: string | null;
   onClose: () => void;
+  showDot?: boolean;
 }) {
   const active =
     pathname === item.href ||
@@ -37,13 +39,19 @@ const SidebarLink = memo(function SidebarLink({
       prefetch={true}
       onClick={onClose}
       className={[
-        "flex h-10 items-center rounded-md px-3 text-sm transition-colors",
+        "flex h-10 items-center justify-between gap-2 rounded-md px-3 text-sm transition-colors",
         active
           ? "bg-zinc-100 text-zinc-950 dark:bg-zinc-900 dark:text-zinc-50"
           : "text-zinc-700 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-900/60",
       ].join(" ")}
     >
-      {item.title}
+      <span className="truncate">{item.title}</span>
+      {showDot && (
+        <span
+          aria-label="Tienes notificaciones sin leer"
+          className="h-2 w-2 shrink-0 rounded-full bg-rose-500"
+        />
+      )}
     </Link>
   );
 });
@@ -52,10 +60,12 @@ const SidebarSectionBlock = memo(function SidebarSectionBlock({
   section,
   pathname,
   onClose,
+  dotHref,
 }: {
   section: SidebarSection;
   pathname: string | null;
   onClose: () => void;
+  dotHref: string | null;
 }) {
   return (
     <div key={section.title}>
@@ -69,6 +79,7 @@ const SidebarSectionBlock = memo(function SidebarSectionBlock({
             item={item}
             pathname={pathname}
             onClose={onClose}
+            showDot={dotHref !== null && item.href === dotHref}
           />
         ))}
       </div>
@@ -135,6 +146,53 @@ function SidebarImpl({
       .map((part) => part[0]?.toUpperCase())
       .join("");
   }, [displayLabel]);
+
+  // Ruta del item de notificaciones (si el rol la tiene en el sidebar).
+  const notifHref = useMemo(() => {
+    for (const section of sections) {
+      for (const item of section.items) {
+        if (/notificacion/i.test(item.href)) return item.href;
+      }
+    }
+    return null;
+  }, [sections]);
+
+  const [hasUnreadNotifications, setHasUnreadNotifications] = useState(false);
+
+  // Punto rojo: se consulta al montar, al cambiar de ruta y al recuperar foco.
+  useEffect(() => {
+    if (!notifHref) return;
+
+    let cancelled = false;
+    const supabase = createClient();
+
+    const loadUnread = async () => {
+      try {
+        const { count, error } = await supabase
+          .from("notificaciones")
+          .select("id", { count: "exact", head: true })
+          .is("read_at", null);
+        if (cancelled) return;
+        if (error) {
+          setHasUnreadNotifications(false);
+          return;
+        }
+        setHasUnreadNotifications((count ?? 0) > 0);
+      } catch {
+        if (!cancelled) setHasUnreadNotifications(false);
+      }
+    };
+
+    loadUnread();
+    window.addEventListener("focus", loadUnread);
+
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", loadUnread);
+    };
+  }, [notifHref, pathname]);
+
+  const dotHref = notifHref && hasUnreadNotifications ? notifHref : null;
 
   useEffect(() => {
     let cancelled = false;
@@ -238,6 +296,7 @@ function SidebarImpl({
                 section={section}
                 pathname={pathname}
                 onClose={onClose}
+                dotHref={dotHref}
               />
             ))}
           </div>
