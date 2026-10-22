@@ -115,7 +115,7 @@ export const REVISOR_ROUTES = {
   supervisores: "/platform/revisor/supervisores",
   task: "/platform/task",
   chat: "/platform/chat",
-  correos: "/platform/correos",
+  reporte: "/platform/reporte",
   documentos: "/platform/documentos",
   planificador: "/platform/planificador",
   roles: "/platform/settings/roles",
@@ -130,7 +130,6 @@ export const SUPERVISOR_ROUTES = {
   rendimiento: "/platform/supervisor",
   task: "/platform/task",
   chat: "/platform/chat",
-  correos: "/platform/correos",
   documentos: "/platform/documentos",
   planificador: "/platform/planificador",
   notificaciones: "/platform/settings/notificaciones",
@@ -152,7 +151,7 @@ export function buildRevisorSections(): SidebarSection[] {
       title: "Herramientas",
       items: [
         { title: "Chat Directo", href: REVISOR_ROUTES.chat },
-        { title: "Correos", href: REVISOR_ROUTES.correos },
+        { title: "Reporte", href: REVISOR_ROUTES.reporte },
         { title: "Archivero", href: REVISOR_ROUTES.documentos },
         { title: "Calendario", href: REVISOR_ROUTES.planificador },
       ],
@@ -182,8 +181,6 @@ export function buildSupervisorSections(): SidebarSection[] {
       title: "Herramientas",
       items: [
         { title: "Chat Directo", href: SUPERVISOR_ROUTES.chat },
-        { title: "Correos", href: SUPERVISOR_ROUTES.correos },
-       
         { title: "Calendario", href: SUPERVISOR_ROUTES.planificador },
       ],
     },

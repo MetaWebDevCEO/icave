@@ -132,9 +132,13 @@ export async function loadChatDirectory(client: SupabaseClient): Promise<Directo
   const pendingAvatars = new Map<string, { bucket: string; path: string }>();
 
   try {
+    // `select("*")` a propósito: la tabla `user_roles` no siempre tiene las
+    // columnas heredadas (`rol`, `user_role`, `tipo`…). Pedirlas explícitamente
+    // hace fallar la consulta completa y todos los roles quedaban vacíos, con
+    // lo que cada contacto caía al rol por defecto ("Supervisor").
     const { data, error } = await client
       .from("user_roles")
-      .select("user_id, role_code, role, rol, user_role, type, tipo, email")
+      .select("*")
       .limit(5000);
     if (!error) {
       for (const raw of (data ?? []) as Record<string, unknown>[]) {

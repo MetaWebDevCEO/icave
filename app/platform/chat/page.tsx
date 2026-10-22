@@ -22,7 +22,8 @@ import { ChatView } from "@/app/platform/chat/chat-view";
 function buildParticipant(
   row: { user_id?: unknown; email?: unknown; display_name?: unknown; role?: unknown },
   nameFallback: string | null,
-  avatarUrl: string | null
+  avatarUrl: string | null,
+  roleFallback: UserRole | null
 ): ChatParticipant | null {
   const userId = typeof row.user_id === "string" ? row.user_id.trim() : "";
   if (!userId) return null;
@@ -31,7 +32,9 @@ function buildParticipant(
     typeof row.display_name === "string" && row.display_name.trim()
       ? row.display_name.trim()
       : "";
-  const role = roleFromRow(row as Record<string, unknown>) ?? "usuario";
+  // El rol del directorio (`user_roles`) manda; la columna guardada en la
+  // conversación sólo se usa si el usuario ya no existe en el directorio.
+  const role = roleFallback ?? roleFromRow(row as Record<string, unknown>) ?? "usuario";
   return {
     userId,
     email,
@@ -140,7 +143,8 @@ export default async function ChatPage() {
             return buildParticipant(
               raw,
               fallback ?? (email ? deriveDisplayName(email) : null),
-              directory.avatarByUserId.get(uid) ?? null
+              directory.avatarByUserId.get(uid) ?? null,
+              directory.roleByUserId.get(uid) ?? null
             );
           })
           .filter((value): value is ChatParticipant => value !== null);

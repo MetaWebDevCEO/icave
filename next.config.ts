@@ -6,6 +6,9 @@ const isDev = process.env.NODE_ENV !== "production";
 
 const nextConfig: NextConfig = {
   ...(isVercel ? {} : { distDir: ".next-build" }),
+  // El generador de PDF usa pdfkit, que lee sus métricas de fuente con
+  // `fs` desde `node_modules`. Si se empaqueta, el path se rompe.
+  serverExternalPackages: ["@react-pdf/renderer"],
   // Permite abrir el dev server tanto por localhost como por IP LAN
   // (192.168.x.x, etc.) sin que Next bloquee las conexiones.
   ...(isDev
