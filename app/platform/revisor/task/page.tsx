@@ -201,6 +201,7 @@ export default async function RevisorTaskPage({
   const sections = buildSections(role);
   const sp = await searchParams;
   const statusFilter = getSearchParam(sp, "status") ?? "all";
+  const initialOpenId = getSearchParam(sp, "assignment_id") ?? undefined;
 
   const admin =
     serviceKey && !serviceKey.includes("__REPLACE_ME__")
@@ -240,6 +241,32 @@ export default async function RevisorTaskPage({
         .order("due_at", { ascending: true })
         .order("created_at", { ascending: false })
         .limit(200);
+    }
+
+    return extended;
+  };
+
+  const fetchAssignmentById = async (client: SupabaseClient, assignmentId: string) => {
+    const extended = await client
+      .from("asignaciones")
+      .select(selectFieldsExtended)
+      .eq("id", assignmentId)
+      .maybeSingle();
+
+    if (isSchemaMismatch(extended.error)) {
+      const mid = await client
+        .from("asignaciones")
+        .select(selectFieldsMid)
+        .eq("id", assignmentId)
+        .maybeSingle();
+
+      if (!isSchemaMismatch(mid.error)) return mid;
+
+      return client
+        .from("asignaciones")
+        .select(selectFieldsBase)
+        .eq("id", assignmentId)
+        .maybeSingle();
     }
 
     return extended;
@@ -356,7 +383,7 @@ export default async function RevisorTaskPage({
     );
   }
 
-  const assignments = sortByMostRecentMonthFirst((data ?? []).filter((row) => {
+  let assignments = sortByMostRecentMonthFirst((data ?? []).filter((row) => {
     if (statusFilter === "all") return true;
     const status = (row.status ?? "").trim().toLowerCase();
 
@@ -383,6 +410,20 @@ export default async function RevisorTaskPage({
     if (statusFilter === "completed") return isCompleted;
     return true;
   }));
+
+  if (initialOpenId && !assignments.some((row) => row.id === initialOpenId)) {
+    const singleResult = await fetchAssignmentById(preferredClient, initialOpenId);
+    let singleRow = (singleResult.data as AssignmentRow | null) ?? null;
+
+    if ((!singleRow || singleResult.error) && admin && preferredClient !== admin) {
+      const fallbackSingle = await fetchAssignmentById(admin, initialOpenId);
+      singleRow = (fallbackSingle.data as AssignmentRow | null) ?? null;
+    }
+
+    if (singleRow?.id) {
+      assignments = sortByMostRecentMonthFirst([singleRow, ...assignments]);
+    }
+  }
 
   async function deleteAssignment(formData: FormData) {
     "use server";
@@ -703,6 +744,7 @@ export default async function RevisorTaskPage({
       statusFilter={statusFilter}
       error={error}
       assignments={assignments}
+      initialOpenId={initialOpenId}
       basePath={BASE_PATH}
       onSubmit={submitWork}
       downloadBasePath={`${BASE_PATH}/download`}

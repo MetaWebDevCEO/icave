@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useFormStatus } from "react-dom";
 import { useRouter } from "next/navigation";
 import { formatCalendarDateShort, getUtcYmd, parseAsCalendarDate } from "@/lib/calendar-date";
@@ -337,6 +337,7 @@ export function TaskBoard({
   role,
   currentUserId,
   tasks,
+  initialOpenId,
   onSubmit,
   downloadBasePath,
   onSaveComment,
@@ -349,6 +350,7 @@ export function TaskBoard({
   role: UserRole;
   currentUserId: string;
   tasks: TaskRow[];
+  initialOpenId?: string;
   onSubmit: (formData: FormData) => Promise<void>;
   downloadBasePath: string;
   onSaveComment: (formData: FormData) => Promise<void>;
@@ -366,6 +368,13 @@ export function TaskBoard({
   const [returnReason, setReturnReason] = useState("");
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const router = useRouter();
+
+  useEffect(() => {
+    if (!initialOpenId) return;
+    if (!tasks.some((t) => t.id === initialOpenId)) return;
+    resetModalState();
+    setOpenId(initialOpenId);
+  }, [initialOpenId, tasks]);
 
   const selected = useMemo(() => {
     if (!openId) return null;

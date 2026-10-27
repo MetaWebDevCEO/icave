@@ -21,6 +21,7 @@ type Props = {
   userOptions?: { value: string; label: string }[];
   error: PostgrestError | null;
   assignments: TaskRowWithRevisor[];
+  initialOpenId?: string;
   basePath: string;
   onSubmit: (formData: FormData) => Promise<void>;
   downloadBasePath: string;
@@ -45,6 +46,7 @@ export function TaskPageContent({
   userOptions = [],
   error,
   assignments,
+  initialOpenId,
   basePath,
   onSubmit,
   downloadBasePath,
@@ -190,6 +192,7 @@ export function TaskPageContent({
             role={role}
             currentUserId={currentUserId}
             tasks={assignments}
+            initialOpenId={initialOpenId}
             onSubmit={onSubmit}
             downloadBasePath={downloadBasePath}
             onSaveComment={onSaveComment}

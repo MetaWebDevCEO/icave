@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Avatar } from "@/components/ui/avatar";
 
@@ -24,7 +25,22 @@ type Props = {
   monthOptions: MonthOption[];
 };
 
-function MonthFilter({ value, options }: { value: string; options: MonthOption[] }) {
+/**
+ * Ruta de detalle de un supervisor.
+ *
+ * La llave canónica debe ser el `id` del usuario porque es estable aunque el
+ * correo cambie. Solo usamos `ghost:<email>` cuando el supervisor no existe en
+ * auth/profiles y lo armamos desde asignaciones.
+ */
+export function supervisorDetailHref(
+  s: Pick<SupervisorCardData, "id" | "email">,
+  monthValue: string
+) {
+  const key = s.id || s.email || "";
+  return `/platform/revisor/supervisores/${encodeURIComponent(key)}?month=${encodeURIComponent(monthValue)}`;
+}
+
+export function MonthFilter({ value, options }: { value: string; options: MonthOption[] }) {
   const router = useRouter();
 
   const onChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
@@ -106,13 +122,17 @@ function StatPill({
   );
 }
 
-function SupervisorCard({ s }: { s: SupervisorCardData }) {
+function SupervisorCard({ s, href }: { s: SupervisorCardData; href: string }) {
   const pct = progresoPorcentaje(s.stats);
   const total = totalAsignaciones(s.stats);
   const segmentos = progresoSegmentos(s.stats);
 
   return (
-    <div className="bg-white rounded-xl shadow-sm border border-zinc-200/80 p-5 flex flex-col gap-4 hover:shadow-md hover:border-zinc-300 transition-all">
+    <Link
+      href={href}
+      aria-label={`Ver las tareas asignadas de ${s.displayName}`}
+      className="group bg-white rounded-xl shadow-sm border border-zinc-200/80 p-5 flex flex-col gap-4 hover:shadow-md hover:border-zinc-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400 transition-all"
+    >
       <div className="flex items-start gap-3">
         <div className="flex-shrink-0">
           <Avatar
@@ -167,7 +187,21 @@ function SupervisorCard({ s }: { s: SupervisorCardData }) {
         <div className="w-px h-10 bg-zinc-100" />
         <StatPill label="Pendientes" value={s.stats.pendientes} colorHex="#f59e0b" />
       </div>
-    </div>
+
+      <div className="flex items-center justify-between border-t border-zinc-100 pt-2 text-[11px] font-medium text-zinc-500 group-hover:text-zinc-900 transition-colors">
+        <span>Ver tareas del mes</span>
+        <svg
+          className="w-3.5 h-3.5"
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke="currentColor"
+          strokeWidth={2}
+          aria-hidden="true"
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+        </svg>
+      </div>
+    </Link>
   );
 }
 
@@ -213,7 +247,7 @@ export function SupervisoresCards({ supervisores, monthValue, monthOptions }: Pr
       </div>
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
         {supervisores.map((s) => (
-          <SupervisorCard key={s.id} s={s} />
+          <SupervisorCard key={s.id} s={s} href={supervisorDetailHref(s, monthValue)} />
         ))}
       </div>
     </div>

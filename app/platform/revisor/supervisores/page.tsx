@@ -12,6 +12,17 @@ import {
   SupervisoresCards,
   type SupervisorCardData,
 } from "./supervisores-cards";
+import {
+  MONTH_LABELS,
+  buildMonthOptions,
+  classifyStatus,
+  deriveDisplayName,
+  fallsInMonth,
+  getMonthRange,
+  monthKey,
+  normalizeEmail,
+  parseMonthKey,
+} from "./shared";
 
 export const revalidate = 30;
 
@@ -19,21 +30,6 @@ type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 
 const DEFAULT_AVATAR_BUCKET = "avatars";
 const AVATAR_EXPIRES_SECONDS = 60 * 60;
-
-const MONTH_LABELS = [
-  "Enero",
-  "Febrero",
-  "Marzo",
-  "Abril",
-  "Mayo",
-  "Junio",
-  "Julio",
-  "Agosto",
-  "Septiembre",
-  "Octubre",
-  "Noviembre",
-  "Diciembre",
-];
 
 const CANONICAL_SUPERVISOR_ROLE_CODES = new Set<string>([
   "2",
@@ -44,109 +40,6 @@ const CANONICAL_SUPERVISOR_ROLE_CODES = new Set<string>([
   "sup",
   "s",
 ]);
-
-function pad2(n: number) {
-  return n < 10 ? `0${n}` : `${n}`;
-}
-
-function getMonthRange(year: number, month0Idx: number): { startISO: string; endISO: string } {
-  const start = new Date(Date.UTC(year, month0Idx, 1, 0, 0, 0, 0));
-  const end = new Date(Date.UTC(year, month0Idx + 1, 1, 0, 0, 0, 0));
-  return {
-    startISO: start.toISOString(),
-    endISO: end.toISOString(),
-  };
-}
-
-function monthKey(year: number, month0Idx: number) {
-  return `${year}-${pad2(month0Idx + 1)}`;
-}
-
-function parseMonthKey(v: string | undefined): { year: number; month0Idx: number } | null {
-  if (!v) return null;
-  const match = /^(\d{4})-(\d{1,2})$/.exec(v.trim());
-  if (!match) return null;
-  const year = Number(match[1]);
-  const mm = Number(match[2]);
-  if (!Number.isFinite(year) || !Number.isFinite(mm)) return null;
-  const month0Idx = Math.min(11, Math.max(0, mm - 1));
-  if (year < 2000 || year > 2100) return null;
-  return { year, month0Idx };
-}
-
-function buildMonthOptions(currentYear: number): { value: string; label: string }[] {
-  const opts: { value: string; label: string }[] = [];
-  for (let y = currentYear + 1; y >= currentYear - 1; y--) {
-    for (let m = 11; m >= 0; m--) {
-      opts.push({ value: monthKey(y, m), label: `${MONTH_LABELS[m]} ${y}` });
-    }
-  }
-  return opts;
-}
-
-function normalizeEmail(v: string | null | undefined): string {
-  return typeof v === "string" ? v.trim().toLowerCase() : "";
-}
-
-function deriveDisplayName(
-  email: string | null | undefined,
-  metadata: Record<string, unknown>
-): string {
-  const metadataName =
-    typeof metadata.full_name === "string"
-      ? metadata.full_name
-      : typeof metadata.display_name === "string"
-        ? metadata.display_name
-        : typeof metadata.name === "string"
-          ? metadata.name
-          : "";
-
-  if (metadataName.trim()) return metadataName.trim();
-  if (!email) return "Sin nombre";
-
-  const localPart = email.split("@")[0] ?? "supervisor";
-  return localPart
-    .replace(/[._-]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .replace(/\b\w/g, (letter) => letter.toUpperCase());
-}
-
-function classifyStatus(raw: unknown): "completadas" | "entregadas" | "pendientes" {
-  const s = typeof raw === "string" ? raw.trim().toLowerCase() : "";
-  if (s.includes("entreg")) {
-    return "entregadas";
-  }
-  if (s.includes("complet") || s.includes("done") || s.includes("finaliz")) {
-    return "completadas";
-  }
-  if (s.includes("curso") || s.includes("progreso") || s.includes("progress")) {
-    return "entregadas";
-  }
-  if (
-    s.includes("open") ||
-    s.includes("nueva") ||
-    s.includes("nuevo") ||
-    s.includes("espera")
-  ) {
-    if (s.includes("pend")) return "pendientes";
-    return "entregadas";
-  }
-  if (s.includes("pend")) return "pendientes";
-  return s.length === 0 ? "pendientes" : "pendientes";
-}
-
-function fallsInMonth(
-  dateFields: { created_at?: unknown },
-  startISO: string,
-  endISO: string
-): boolean {
-  const c = dateFields.created_at;
-  if (typeof c !== "string" || !c) return false;
-  const t = new Date(c).getTime();
-  if (!Number.isFinite(t)) return false;
-  return t >= new Date(startISO).getTime() && t < new Date(endISO).getTime();
-}
 
 function getSearchParam(
   sp: Record<string, string | string[] | undefined>,
@@ -451,6 +344,20 @@ export default async function SupervisoresPage({
     }
   }
 
+  const profileEmailByUserId = new Map<string, string>();
+  for (const p of profileRows) {
+    const uid =
+      typeof p.user_id === "string"
+        ? p.user_id.trim()
+        : typeof p.id === "string"
+          ? p.id.trim()
+          : "";
+    const email = normalizeEmail(typeof p.email === "string" ? p.email : null);
+    if (uid && email) {
+      profileEmailByUserId.set(uid, email);
+    }
+  }
+
   // auth.users: intentamos listUsers + fallback por IDs de user_roles + emails
   let authUsers: AuthUserLite[] = [];
   if (admin) {
@@ -592,17 +499,18 @@ export default async function SupervisoresPage({
   const addedIds = new Set<string>();
 
   for (const u of authUsers) {
-    const email = normalizeEmail(u.email);
+    const resolvedEmail =
+      normalizeEmail(u.email) || profileEmailByUserId.get(u.id) || "";
     const byId = supervisorUserIds.has(u.id);
-    const byEmail = email ? supervisorEmails.has(email) : false;
+    const byEmail = resolvedEmail ? supervisorEmails.has(resolvedEmail) : false;
     if (!byId && !byEmail) continue;
 
-    if (email) addedEmails.add(email);
+    if (resolvedEmail) addedEmails.add(resolvedEmail);
     addedIds.add(u.id);
 
     const stats =
-      email && statsByEmail.has(email)
-        ? statsByEmail.get(email)!
+      resolvedEmail && statsByEmail.has(resolvedEmail)
+        ? statsByEmail.get(resolvedEmail)!
         : { completadas: 0, entregadas: 0, pendientes: 0 };
 
     const meta =
@@ -627,8 +535,8 @@ export default async function SupervisoresPage({
 
     preSupervisores.push({
       id: u.id,
-      email: u.email ?? null,
-      displayName: deriveDisplayName(u.email ?? null, meta),
+      email: resolvedEmail || null,
+      displayName: deriveDisplayName(resolvedEmail || (u.email ?? null), meta),
       avatarBucket: bucket,
       avatarPath: path,
       fallbackAvatar: fallbackPicture ?? null,
