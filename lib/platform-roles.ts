@@ -109,6 +109,9 @@ export async function getRoleFromUserRolesTable(
   return role;
 }
 
+/** Muro de módulos: punto de aterrizaje común tras iniciar sesión. */
+export const MURO_ROUTE = "/platform";
+
 export const REVISOR_ROUTES = {
   dashboard: "/platform/revisor",
   asignacion: "/platform/revisor/asignacion",
@@ -141,6 +144,7 @@ export function buildRevisorSections(): SidebarSection[] {
     {
       title: "Plataforma (Revisor)",
       items: [
+        { title: "Muro", href: MURO_ROUTE },
         { title: "Dashboard", href: REVISOR_ROUTES.dashboard },
         { title: "Asignacion", href: REVISOR_ROUTES.asignacion },
         { title: "Supervisores", href: REVISOR_ROUTES.supervisores },
@@ -173,6 +177,7 @@ export function buildSupervisorSections(): SidebarSection[] {
     {
       title: "Plataforma (Supervisor)",
       items: [
+        { title: "Muro", href: MURO_ROUTE },
         { title: "Mi Rendimiento", href: SUPERVISOR_ROUTES.dashboard },
         { title: "Task", href: SUPERVISOR_ROUTES.task },
       ],

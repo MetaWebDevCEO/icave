@@ -3,7 +3,8 @@ import Image from "next/image";
 import Link from "next/link";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
-import { resolveRoleForUser, dashboardForRole } from "@/lib/platform-roles";
+import { resolveRoleForUser, MURO_ROUTE } from "@/lib/platform-roles";
+import { SubmitButton } from "@/components/ui/submit-button";
 
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 
@@ -59,13 +60,11 @@ export default async function Home({
       redirect(`/?error=${encodeURIComponent(msg)}`);
     }
 
-    // Resolver rol y redirigir directamente al dashboard correspondiente
+    // Tras iniciar sesión, todos los roles aterrizan en el muro de módulos.
     const { data: { user } } = await supabase.auth.getUser();
     if (user) {
-      let dest = "/platform";
       try {
         const role = await resolveRoleForUser(supabase, user.id, { email: user.email });
-        dest = dashboardForRole(role);
 
         // Marca de "viene del login" para que el supervisor vea el pop de
         // actividades pendientes. Se limpia desde el cliente tras mostrarlo.
@@ -78,12 +77,11 @@ export default async function Home({
           });
         }
       } catch {
-        dest = "/platform";
+        /* ignore */
       }
-      redirect(dest);
     }
 
-    redirect("/platform");
+    redirect(MURO_ROUTE);
   }
 
   async function signUp(formData: FormData) {
@@ -124,17 +122,8 @@ export default async function Home({
       );
     }
 
-    // Resolver rol y redirigir directamente al dashboard correspondiente
-    if (data.user) {
-      try {
-        const role = await resolveRoleForUser(supabase, data.user.id, { email: data.user.email });
-        redirect(dashboardForRole(role));
-      } catch {
-        redirect("/platform");
-      }
-    }
-
-    redirect("/platform");
+    // Tras crear la cuenta, todos los roles aterrizan en el muro de módulos.
+    redirect(MURO_ROUTE);
   }
 
   async function signOut() {
@@ -161,13 +150,8 @@ export default async function Home({
     : null;
 
   if (isSupabaseConfigured && user && !errorParam && !messageParam) {
-    try {
-      const supabase = await createClient();
-      const role = await resolveRoleForUser(supabase, user.id, { email: user.email });
-      redirect(dashboardForRole(role));
-    } catch {
-      redirect("/platform");
-    }
+    // Ya hay sesión activa: aterriza en el muro de módulos.
+    redirect(MURO_ROUTE);
   }
 
   return (
@@ -297,12 +281,12 @@ export default async function Home({
                         Olvide mi contraseña
                       </Link>
                     </div>
-                    <button
-                      type="submit"
+                    <SubmitButton
+                      pendingText="Ingresando..."
                       className="mt-1 inline-flex h-12 w-full items-center justify-center rounded-xl bg-[#111111] px-4 text-sm font-medium text-white transition-colors hover:bg-[#1d1d1d] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#111111]/30"
                     >
                       Entrar
-                    </button>
+                    </SubmitButton>
                     <div className="pt-8 text-center text-xs leading-6 text-[#7b766f]">
                       <a
                         href="https://metawebdevsolutions.com.mx"
